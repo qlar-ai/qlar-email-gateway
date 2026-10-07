@@ -20,7 +20,9 @@ BASE_ENV = {
 @pytest.fixture
 def env(monkeypatch):
     for key in list(__import__("os").environ):
-        if key.startswith(("QLAR_", "IMAP_", "SMTP_", "MAIL_", "RECIPIENT_", "MAX_", "POLL_", "GATEWAY_", "AUDIT_")):
+        if key.startswith(
+            ("QLAR_", "IMAP_", "SMTP_", "MAIL_", "RECIPIENT_", "MAX_", "POLL_", "GATEWAY_", "AUDIT_")
+        ):
             monkeypatch.delenv(key, raising=False)
     for key, value in BASE_ENV.items():
         monkeypatch.setenv(key, value)
@@ -31,7 +33,12 @@ def test_mail_defaults(env):
     settings = load_settings()
 
     mail = settings.mail
-    assert (mail.imap_host, mail.imap_port, mail.imap_security, mail.imap_folder) == ("imap.corp.test", 993, "ssl", "INBOX")
+    assert (mail.imap_host, mail.imap_port, mail.imap_security, mail.imap_folder) == (
+        "imap.corp.test",
+        993,
+        "ssl",
+        "INBOX",
+    )
     assert (mail.smtp_host, mail.smtp_port, mail.smtp_security) == ("smtp.corp.test", 587, "starttls")
     assert mail.password == "s3cret"
     assert settings.poll_interval_seconds == 60
@@ -96,12 +103,14 @@ def test_state_round_trip_keeps_mail_fields(tmp_path):
 def test_old_state_file_without_mail_fields_loads(tmp_path):
     path = tmp_path / "gateway-state.json"
     path.write_text(
-        json.dumps({
-            "gatewayId": "egw_1",
-            "qlarPublicKeyPem": "PEM",
-            "enrolledAt": "2026-10-07T08:00:00+00:00",
-            "baseUrl": "https://q/api/email-gateway",
-        }),
+        json.dumps(
+            {
+                "gatewayId": "egw_1",
+                "qlarPublicKeyPem": "PEM",
+                "enrolledAt": "2026-10-07T08:00:00+00:00",
+                "baseUrl": "https://q/api/email-gateway",
+            }
+        ),
         encoding="utf-8",
     )
 

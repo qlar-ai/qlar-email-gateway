@@ -139,7 +139,10 @@ class TestJobSignature:
             "references": [],
         }
         assert crypto.canonical_job_bytes(job) == (
-            b"job_2\ntest_connection\n1\n\n\n\n\n" + EMPTY_HASH.encode() + b"\n" + EMPTY_HASH.encode()
+            b"job_2\ntest_connection\n1\n\n\n\n\n"
+            + EMPTY_HASH.encode()
+            + b"\n"
+            + EMPTY_HASH.encode()
             + b"\n2026-10-07T08:00:00Z\n2026-10-07T08:00:45Z\n\n\n"
         )
 
