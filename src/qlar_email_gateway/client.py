@@ -34,6 +34,10 @@ from .crypto import (
 )
 
 
+class Revoked(Exception):
+    """Qlar says this gateway is revoked. Both loops stop; a human must re-enrol it."""
+
+
 class QlarUnreachable(Exception):
     """Qlar could not be reached — a network problem, not a rejection."""
 
@@ -112,9 +116,7 @@ class QlarClient:
 
         if response.status_code >= 400:
             if _is_not_our_api(response, decoded):
-                raise QlarNotAnEndpoint(
-                    response.status_code, url, response.headers.get("content-type", "")
-                )
+                raise QlarNotAnEndpoint(response.status_code, url, response.headers.get("content-type", ""))
             raise QlarRejected(
                 response.status_code,
                 str(decoded.get("message") or decoded.get("title") or response.reason_phrase),

@@ -1,13 +1,13 @@
-"""The customer's own record of every query Qlar ran.
+"""The customer's own record of every email the gateway forwarded, filtered or sent (PRD FR-43).
 
-This is not a debugging log. For many organisations it is the actual reason the gateway
-exists: "no open database port" usually also means "we want to see, in our own systems,
-every statement that touched our data". The file is theirs, it never leaves the premises,
-and nothing in the protocol can turn it off.
+This is not a debugging log. For many organisations it is the reason they accept the gateway at
+all: "we want to see, in our own systems, every email that went to Qlar and every reply that came
+back". The file is theirs, it never leaves the premises, and nothing in the protocol can turn it
+off. The mailbox password is never written here.
 
-One JSON object per line, so it can be tailed, grepped, or shipped to a SIEM without a
-parser. Rotation is by size and kept simple deliberately — a logging framework here would
-be another dependency in someone else's network for very little gain.
+One JSON object per line, so it can be tailed, grepped, or shipped to a SIEM without a parser.
+Rotation is by size and kept simple deliberately — a logging framework here would be another
+dependency in someone else's network for very little gain.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from typing import Any
 
 MAX_BYTES = 32 * 1024 * 1024
 KEEP_FILES = 5
+SUBJECT_LIMIT = 200
 
 _lock = threading.Lock()
 
@@ -32,35 +33,39 @@ class AuditLog:
     def record(
         self,
         *,
-        job_id: str,
-        job_type: str,
-        sql: str,
-        outcome: str,
-        row_count: int,
-        duration_ms: int,
+        status: str,
+        message_id: str | None = None,
+        sender: str | None = None,
+        to: list[str] | str | None = None,
+        subject: str | None = None,
         agent_id: str | None = None,
-        user_id: str | None = None,
         conversation_id: str | None = None,
-        error: dict[str, Any] | None = None,
+        reason: str | None = None,
+        duration_ms: int | None = None,
+        job_id: str | None = None,
+        uid: int | None = None,
     ) -> None:
-        """Appends one entry. Never raises — auditing must not break query serving."""
+        """Appends one entry. Never raises — auditing must not stop mail flowing.
+
+        `status` is what happened: `forwarded`, `filtered`, `rejected_by_qlar`,
+        `uidvalidity_reset`, `sent`, `send_rejected`, `send_failed`, `expired`, `bad_signature`.
+        """
         if self.path is None:
             return
 
-        entry = {
+        entry: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(),
-            "jobId": job_id,
-            "jobType": job_type,
-            "outcome": outcome,
+            "status": status,
+            "messageId": message_id,
+            "from": sender,
+            "to": to,
+            "subject": (subject or "")[:SUBJECT_LIMIT] if subject is not None else None,
             "agentId": agent_id,
-            "userId": user_id,
             "conversationId": conversation_id,
-            "rowCount": row_count,
+            "reason": reason,
             "durationMs": duration_ms,
-            # The statement verbatim. Truncating it would defeat the point: an auditor
-            # needs to see exactly what ran, not a summary of it.
-            "sql": sql,
-            "error": error,
+            "jobId": job_id,
+            "uid": uid,
         }
 
         try:
@@ -69,9 +74,9 @@ class AuditLog:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 with self.path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except Exception:  # noqa: S110 - deliberate best-effort cleanup
-            # A full disk or a permissions mistake must not stop the gateway answering
-            # queries; the operator sees it in the process log instead.
+        except Exception:  # noqa: S110 - deliberate best-effort write
+            # A full disk or a permissions mistake must not stop the gateway; the operator sees it
+            # in the process log instead.
             pass
 
     def _rotate_if_needed(self) -> None:
@@ -83,10 +88,8 @@ class AuditLog:
         oldest = self.path.with_suffix(self.path.suffix + f".{KEEP_FILES}")
         if oldest.exists():
             oldest.unlink()
-
         for index in range(KEEP_FILES - 1, 0, -1):
             source = self.path.with_suffix(self.path.suffix + f".{index}")
             if source.exists():
                 source.rename(self.path.with_suffix(self.path.suffix + f".{index + 1}"))
-
         os.replace(self.path, self.path.with_suffix(self.path.suffix + ".1"))

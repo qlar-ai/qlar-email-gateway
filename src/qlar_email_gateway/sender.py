@@ -11,6 +11,8 @@ from __future__ import annotations
 import smtplib
 import ssl
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate
 from typing import Any
@@ -59,16 +61,33 @@ def send_reply(mail: MailSettings, job: dict[str, Any]) -> str:
     msg = build_reply(mail, job, message_id)
     recipients = [str(address) for address in job.get("to") or []]
 
-    try:
-        connection = _connect(mail)
+    with _smtp_errors():
+        connection, _ = _connect(mail)
         try:
             connection.login(mail.user, mail.password)
             connection.send_message(msg, from_addr=mail.address, to_addrs=recipients)
         finally:
-            try:
-                connection.quit()
-            except (smtplib.SMTPException, OSError):
-                connection.close()
+            _close(connection)
+
+    return message_id
+
+
+def probe_smtp(mail: MailSettings) -> str:
+    """Connects and logs in to SMTP without sending anything; returns the server's banner."""
+    with _smtp_errors():
+        connection, banner = _connect(mail)
+        try:
+            connection.login(mail.user, mail.password)
+        finally:
+            _close(connection)
+    return banner
+
+
+@contextmanager
+def _smtp_errors() -> Iterator[None]:
+    """Turns smtplib and socket failures into SmtpSendError with a protocol category."""
+    try:
+        yield
     except smtplib.SMTPAuthenticationError as error:
         raise SmtpSendError("auth", str(error.smtp_code), "SMTP login refused") from error
     except smtplib.SMTPRecipientsRefused as error:
@@ -83,18 +102,27 @@ def send_reply(mail: MailSettings, job: dict[str, Any]) -> str:
             "connection", "", f"could not reach the SMTP server: {type(error).__name__}"
         ) from error
 
-    return message_id
 
-
-def _connect(mail: MailSettings) -> smtplib.SMTP:
+def _connect(mail: MailSettings) -> tuple[smtplib.SMTP, str]:
+    """Opens the SMTP connection and returns it with the server's greeting banner."""
     context = ssl.create_default_context()
     if mail.smtp_security == "ssl":
-        return smtplib.SMTP_SSL(mail.smtp_host, mail.smtp_port, timeout=SMTP_TIMEOUT_SECONDS, context=context)
-    connection = smtplib.SMTP(mail.smtp_host, mail.smtp_port, timeout=SMTP_TIMEOUT_SECONDS)
+        connection: smtplib.SMTP = smtplib.SMTP_SSL(timeout=SMTP_TIMEOUT_SECONDS, context=context)
+    else:
+        connection = smtplib.SMTP(timeout=SMTP_TIMEOUT_SECONDS)
+    _, banner = connection.connect(mail.smtp_host, mail.smtp_port)
     connection.ehlo()
-    connection.starttls(context=context)
-    connection.ehlo()
-    return connection
+    if mail.smtp_security == "starttls":
+        connection.starttls(context=context)
+        connection.ehlo()
+    return connection, _decode(banner)
+
+
+def _close(connection: smtplib.SMTP) -> None:
+    try:
+        connection.quit()
+    except (smtplib.SMTPException, OSError):
+        connection.close()
 
 
 def _decode(value: object) -> str:

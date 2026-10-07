@@ -40,12 +40,16 @@ class Recorder:
     fail_with: Exception | None = None
     fail_at: str = "login"
 
-    def __init__(self, host, port, timeout=None, **kwargs):
+    def __init__(self, host="", port=0, timeout=None, **kwargs):
         self.host, self.port, self.timeout = host, port, timeout
         self.calls: list[str] = []
         self.sent: list[tuple[str, list[str], bytes]] = []
         Recorder.instances.append(self)
+
+    def connect(self, host, port):
+        self.host, self.port = host, port
         self._maybe_fail("connect")
+        return 220, b"smtp.corp.test ESMTP ready"
 
     def _maybe_fail(self, step: str) -> None:
         if Recorder.fail_with is not None and Recorder.fail_at == step:
