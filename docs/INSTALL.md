@@ -18,27 +18,34 @@ email that arrives in it.
 
 ## Option A — Docker
 
+The CMS prints two `echo` lines for `.env` (endpoint and one-time code). Run them, then answer the
+mailbox questions once, interactively. The answers are written to `state/.env` on the volume
+(`--env-file /state/.env` goes *after* the image name: it is the gateway's option, not Docker's):
+
 ```bash
 mkdir qlar-email-gateway && cd qlar-email-gateway
 echo QLAR_BASE_URL=<the URL the CMS shows> >> .env
 echo QLAR_ENROLLMENT_CODE=<the code the CMS shows> >> .env
-docker run -it --rm --env-file .env -v "$PWD/state:/state" ghcr.io/pusakaai/email-gateway:0.1.0 enroll
+docker run -it --rm --env-file .env -v "$PWD/state:/state"   ghcr.io/pusakaai/email-gateway:0.1.0 --env-file /state/.env test-mailbox --init
 ```
 
-The first run asks the mailbox questions, writes them to `.env`, tests the login, enrols and
-prints a fingerprint. After approving it in the CMS, stop it (Ctrl+C) and start it detached:
+That tests the IMAP and SMTP login without contacting Qlar. Then start it for good:
 
 ```bash
-docker run -d --name qlar-email-gateway --restart unless-stopped \
-  --env-file .env -v "$PWD/state:/state" ghcr.io/pusakaai/email-gateway:0.1.0 enroll
+docker run -d --name qlar-email-gateway --restart unless-stopped   --env-file .env -v "$PWD/state:/state"   ghcr.io/pusakaai/email-gateway:0.1.0 --env-file /state/.env enroll
 docker logs -f qlar-email-gateway
 ```
 
-`state/` holds the private key, the enrolment state and the audit log. Back it up; losing it
-means enrolling again. `docker-compose.example.yml` shows the same setup with a read-only root
-filesystem.
+The log shows a fingerprint; compare it with the CMS and click **Approve**.
 
-To set everything without prompts, put the keys from `.env.example` in `.env` before the first run.
+If you prefer, put the mailbox keys from `.env.example` (`IMAP_HOST`, `SMTP_HOST`, `MAIL_USER`,
+`MAIL_PASSWORD`, …) straight into `.env` instead; then the CMS's one-line `docker run … enroll`
+works as printed. Without a terminal the gateway never prompts: missing settings are a
+configuration error and the container exits.
+
+`state/` holds the private key, the enrolment state, `state/.env` and the audit log. Back it up;
+losing it means enrolling again. `docker-compose.example.yml` shows the same setup with a
+read-only root filesystem.
 
 ## Option B — Python and systemd
 

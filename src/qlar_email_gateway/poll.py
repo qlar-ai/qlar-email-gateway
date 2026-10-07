@@ -346,6 +346,7 @@ class PollLoop:
 _GUARD_MESSAGES = {
     "no_recipient": "the job names no recipient",
     "too_many_recipients": "a reply may have only one recipient",
+    "invalid_recipient": "the recipient is not a single plain email address",
     "recipient_not_known": "the recipient has not written to this mailbox recently and is not allow-listed",
     "rate_limited": "too many replies to this recipient in the last hour",
 }

@@ -7,7 +7,7 @@ unbroken characters on a wrapped line, the instruction was the tail of a sentenc
 
 None of that is decoration. An operator who cannot find the next step does not take it, and
 a fingerprint too tedious to compare is a fingerprint nobody compares — which is the one
-check standing between a stolen enrolment code and someone else's database.
+check standing between a stolen enrolment code and someone else's mailbox.
 
 Rules: ASCII only, because this runs on consoles whose code page we do not choose. Colour
 only when there is a terminal that asked for it. And no dependency, in a process a
@@ -145,7 +145,7 @@ def warning(title: str, *lines: str, file: TextIO | None = None) -> None:
     """A warning that reads as one, rather than as more text.
 
     Indented under its own marked heading, with a blank line either side, so that an
-    advisory about an over-privileged database account cannot be mistaken for part of the
+    advisory cannot be mistaken for part of the
     success it follows or the next thing it precedes.
     """
     stream = file or sys.stdout

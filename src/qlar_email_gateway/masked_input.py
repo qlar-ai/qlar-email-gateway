@@ -2,7 +2,7 @@
 
 `getpass` echoes nothing, which is the right default for a login prompt someone types every
 day. It is the wrong default here: this prompt is met once, by an operator pasting a
-database password into an unfamiliar tool, and a terminal that shows no reaction at all is
+mailbox password into an unfamiliar tool, and a terminal that shows no reaction at all is
 indistinguishable from one that has stopped listening. The first thing people do is type it
 twice.
 

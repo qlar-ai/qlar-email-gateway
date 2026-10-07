@@ -25,8 +25,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # The unit suite deliberately needs no database — the guard, crypto and encoding
-      # modules are pure functions and a fake cursor covers the rest. Installing only
+      # The unit suite deliberately needs no mail server — IMAP, SMTP and Qlar are faked and
+      # sleeps and the clock are injected. Installing only
       # [dev] here keeps that honest: if a test starts needing a driver, CI fails.
       - name: Install
         run: pip install -e ".[dev]"

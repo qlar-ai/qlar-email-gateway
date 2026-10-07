@@ -14,12 +14,17 @@ The guard is the answer to that, and it lives here precisely so nothing Qlar sen
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
+from email.utils import parseaddr
 
 from .config import STATE_LOCK, EnrollmentState, Settings
+
+#: One bare addr-spec and nothing else: no display name, brackets, separators or whitespace.
+_BARE_ADDRESS = re.compile(r"^[^@\s<>,;\"()]+@[^@\s<>,;\"()]+$")
 
 
 def utcnow() -> datetime:
@@ -59,6 +64,13 @@ class SendGuard:
             return "no_recipient"
         if len(recipients) > 1:
             return "too_many_recipients"
+        # The raw string is what SMTP will be given, so it must be exactly one address. A value like
+        # "x@evil.com, y@corp.com" ends in an allow-listed domain while SMTP delivers to evil.com.
+        raw = next(address for address in to if address and address.strip())
+        if any(ord(character) < 0x20 or ord(character) == 0x7F for character in raw) or not _is_bare_address(
+            recipients[0]
+        ):
+            return "invalid_recipient"
 
         recipient = recipients[0]
         if not self._is_allowlisted(recipient) and not self._wrote_in_recently(recipient):
@@ -107,3 +119,10 @@ class SendGuard:
         if seen_at.tzinfo is None:
             seen_at = seen_at.replace(tzinfo=UTC)
         return self.clock() - seen_at <= timedelta(days=self.settings.recipient_memory_days)
+
+
+def _is_bare_address(value: str) -> bool:
+    if not _BARE_ADDRESS.match(value):
+        return False
+    name, address = parseaddr(value)
+    return not name and address == value

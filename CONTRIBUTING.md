@@ -1,68 +1,45 @@
 # Contributing
 
-Thanks for looking. This gateway runs inside other people's networks, next to their
-production databases, so the bar for changes here is deliberately higher than for a
-typical utility.
+This gateway runs inside other organisations' networks, next to their mail server, holding a
+mailbox password. The bar for changes here is deliberately higher than for a typical project:
+every change is something a customer's security team may have to re-review.
 
-## Ground rules
+## Principles
 
-1. **The gateway does not trust Qlar.** Any change that makes the gateway rely on Qlar
-   having validated something will be declined. The guard, the read-only transaction and
-   the allowlist exist precisely because the customer should not have to take Qlar's word
-   for anything.
-2. **Dependencies are a cost someone else pays.** Every package added here has to be
-   accepted by a security review in a company you will never meet. The runtime depends on
-   three libraries plus one database driver; adding a fourth needs a good argument.
-3. **The protocol is a contract with software we cannot upgrade.** Gateways live on
-   customer hardware and are updated on their schedule, not ours. Adding an optional field
-   is fine; changing the meaning of an existing one is a protocol version bump.
-4. **Comments explain why, not what.** The interesting part of this codebase is the
-   reasoning — why a parser instead of a regex, why decimals become strings, why the signed
-   path is relative. Preserve that.
+1. **Outbound only.** Nothing may listen on a port.
+2. **Credentials stay here.** `MAIL_PASSWORD` is used for the IMAP and SMTP login and nowhere else:
+   not in a log line, an exception message, the audit file or any request to Qlar.
+3. **The send guard is local and cannot be loosened by Qlar.** Nothing in a job may change `From`,
+   the recipient rule, the rate limit, or add attachments.
+4. **The mailbox is read, never changed.** Read-only `SELECT`, `BODY.PEEK[]`, no flags, no moves.
+5. **Few dependencies.** `cryptography`, `httpx`, `imapclient` and `beautifulsoup4`; adding one
+   needs a good argument and a licence that is not copyleft.
 
-## Getting set up
+## Development
 
 ```bash
-git clone https://github.com/pusakaai/email-gateway.git
-cd db-gateway
-python -m venv .venv && . .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -e ".[dev,all]"
-pytest
+git clone https://github.com/qlar-ai/qlar-email-gateway.git
+cd qlar-email-gateway
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
 ruff check .
+pytest -q
 ```
 
-`[all]` pulls all four database drivers; `[dev]` alone is enough for the unit tests, which
-do not need a database.
+The suite needs no mail server and no Qlar: IMAP, SMTP and Qlar are faked, and sleeps and the clock
+are injected, so scenarios that take minutes in real life (an hour of backlog, IDLE dropping every
+few minutes) run instantly. Keep it that way.
 
-## Tests
+When a test fakes a library, fake what the library really does. The IMAP fakes in
+`tests/test_mailbox.py` follow imapclient's behaviour — for example, `idle_check` returning an empty
+list at once when the server closes the connection, rather than raising.
 
-The suite runs without any database — the guard, crypto and encoding modules are pure
-functions and a fake cursor covers the rest. Keep it that way: a test suite that needs
-Oracle installed is a test suite nobody runs.
+## Protocol changes
 
-A change to `guard.py` needs tests in both directions: the thing that must be blocked, and
-a piece of legitimate analytical SQL that must keep working. A guard that rejects honest
-queries gets switched off, and a guard that is switched off protects nobody.
+`docs/PROTOCOL.md` is the contract with Qlar. Any change to what is signed, sent or expected is a
+protocol change: bump `PROTOCOL_VERSION`, update the document and the canonical-bytes tests on both
+sides (here and in Messenger-BE), and keep accepting the previous version on the server.
 
-## Pull requests
+## Releases
 
-- Branch from `main`; `main` itself is protected.
-- One logical change per PR, with the reasoning in the description.
-- Update `CHANGELOG.md` under `## [Unreleased]`.
-- `pytest` and `ruff check .` must pass; CI runs both on 3.11 and 3.12.
-
-## Adding a database provider
-
-Implement the `Provider` protocol in `src/qlar_email_gateway/providers/base.py` — connect,
-begin a read-only transaction with a timeout, classify a driver error, and name a column
-type — then register it in `providers/__init__.py`, add the extra to `pyproject.toml`, and
-add the dialect and catalog schemas to `guard.py`.
-
-`classify_error` is the part to get right: return the driver's **raw** error code. Qlar
-classifies failures by code and never by message text, because message-text matching once
-made plain syntax errors report as connection failures in production. A provider that
-loses the code would reintroduce that bug.
-
-## Security issues
-
-Do not open a public issue. See [SECURITY.md](SECURITY.md).
+See [docs/RELEASING.md](docs/RELEASING.md).

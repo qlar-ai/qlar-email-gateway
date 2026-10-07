@@ -125,3 +125,20 @@ def test_rate_limit_is_per_recipient(tmp_path, clock):
 
     assert guard.check(["a@x.test"]) == "rate_limited"
     assert guard.check(["b@x.test"]) is None
+
+
+@pytest.mark.parametrize(
+    "smuggled",
+    [
+        "x@evil.com, y@corp.com",
+        "Name <x@evil.com>",
+        "x@evil.com y@corp.com",
+        "<x@evil.com>",
+        "x@evil.com\r\n",
+    ],
+)
+def test_a_recipient_that_is_not_one_bare_address_is_refused(tmp_path, clock, smuggled):
+    # With a domain allowlist, "x@evil.com, y@corp.com" ends in corp.com but SMTP sends to evil.com.
+    guard, _ = guard_for(tmp_path, clock, recipient_allowlist=("corp.com",))
+
+    assert guard.check([smuggled]) == "invalid_recipient"

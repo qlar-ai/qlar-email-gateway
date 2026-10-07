@@ -67,6 +67,8 @@ qlar-email-gateway version
 qlar-email-gateway enroll --base-url https://api.qlar.ai/messenger/api/email-gateway --code K7P4-9WQX-2MTD
 ```
 
+With Docker, the mailbox settings (`IMAP_HOST`, `SMTP_HOST`, `MAIL_USER`, `MAIL_PASSWORD`, …) must be
+in `.env` too, or answered once interactively — see [docs/INSTALL.md](docs/INSTALL.md). With Python,
 `enroll` asks for the mailbox details once (IMAP and SMTP server, user, password), tests the
 login, registers with Qlar and prints a **fingerprint**. Compare it with the one the CMS shows and
 click **Approve**. The gateway starts working by itself a few seconds later.

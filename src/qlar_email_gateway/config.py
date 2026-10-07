@@ -145,7 +145,7 @@ def write_env_values(path: Path, values: dict[str, str]) -> Path | None:
     a key that is already there is replaced in place, comments and hand-added settings are
     left exactly as they were, and only genuinely new keys are appended.
 
-    The file holds a database password, so it is created with mode 0600 already set — the
+    The file holds the mailbox password, so it is created with mode 0600 already set — the
     same reasoning as the private key in `crypto.py`. It is truncated and rewritten in
     place rather than written beside and renamed: a `.env` is routinely bind-mounted into
     a container by path, and a rename would leave the container holding the old inode.

@@ -14,7 +14,7 @@ The rules this module exists to keep:
 * **The mailbox is read, never changed.** The folder is opened read-only and messages are fetched
   with `BODY.PEEK[]`, so nothing is marked read, moved or deleted.
 
-IDLE is used when the server offers it, re-issued every 29 minutes (servers drop it at 30). A
+IDLE is used when the server offers it, one minute at a time with a sync after each. A
 server that drops IDLE four times within five minutes is polled instead until the next restart.
 """
 
@@ -51,7 +51,8 @@ logger = logging.getLogger("qlar_email_gateway.mailbox")
 INBOUND_PATH = "/inbound"
 IMAP_TIMEOUT_SECONDS = 30
 IDLE_CHECK_SECONDS = 60
-IDLE_REISSUE = timedelta(minutes=29)
+#: An IDLE check that returns empty sooner than this did not time out: the connection closed.
+IDLE_EARLY_RETURN = timedelta(seconds=IDLE_CHECK_SECONDS / 2)
 LOGIN_RETRY_SECONDS = 60
 APPROVAL_WAIT_SECONDS = 4
 RECONNECT_MIN_SECONDS = 1.0
@@ -62,6 +63,10 @@ IDLE_DROP_WINDOW = timedelta(minutes=5)
 
 #: What a dropped or broken IMAP connection looks like, from the socket up to the protocol.
 CONNECTION_ERRORS = (OSError, imaplib.IMAP4.error, imaplib.IMAP4.abort)
+
+
+def _is_bye(item: Any) -> bool:
+    return isinstance(item, tuple) and len(item) > 0 and item[0] == b"BYE"
 
 
 class MailboxError(Exception):
@@ -207,19 +212,36 @@ class MailboxWatcher:
     # -- connection modes ----------------------------------------------------------------------
 
     def _idle_loop(self, imap: Any) -> None:
-        started = self.clock()
-        imap.idle()
+        """One IDLE per minute, then always a sync.
+
+        Re-entering IDLE after every check, and searching after every IDLE, closes two gaps an
+        IDLE that is held open has: a new-mail notice that arrived while the watcher was busy
+        forwarding (the server does not repeat it once IDLE starts again) is picked up at the next
+        sync, and the server's 30-minute IDLE limit is never reached. The cost is one UID SEARCH a
+        minute.
+
+        imapclient returns an empty list at once — rather than raising — when the server closes
+        the connection during IDLE, so a check that comes back well before its timeout with nothing
+        in it, or with a BYE, is treated as the connection dropping.
+        """
         while not self._stopping.is_set():
-            responses = imap.idle_check(timeout=IDLE_CHECK_SECONDS)
+            imap.idle()
+            started = self.clock()
+            try:
+                responses = imap.idle_check(timeout=IDLE_CHECK_SECONDS) or []
+            finally:
+                if not self._stopping.is_set():
+                    imap.idle_done()
             if self._stopping.is_set():
                 break
-            new_mail = any(len(item) > 1 and item[1] == b"EXISTS" for item in responses or [])
-            if new_mail or self.clock() - started >= IDLE_REISSUE:
-                imap.idle_done()
-                if new_mail:
-                    self._sync(imap)
-                imap.idle()
-                started = self.clock()
+
+            if any(_is_bye(item) for item in responses):
+                raise ConnectionError("the mail server ended the IDLE session (BYE)")
+            if not responses and self.clock() - started < IDLE_EARLY_RETURN:
+                raise ConnectionError("IDLE ended long before its timeout; the connection was closed")
+
+            self._sync(imap)
+
         try:
             imap.idle_done()
         except Exception:  # noqa: BLE001, S110 - stopping; the server may have gone already
@@ -255,7 +277,7 @@ class MailboxWatcher:
             previous = self.state.uid_validity
             self.state.uid_validity = uid_validity
             self.state.last_uid = uid_next - 1
-            self.state.save(self.settings.state_file)
+            self._save_state()
             self.audit.record(
                 status="uidvalidity_reset",
                 uid=self.state.last_uid,
@@ -278,21 +300,39 @@ class MailboxWatcher:
     def _process(self, imap: Any, uid: int) -> None:
         fetched = imap.fetch([uid], ["BODY.PEEK[]"])
         raw = (fetched.get(uid) or {}).get(b"BODY[]", b"")
-        msg: EmailMessage = BytesParser(policy=policy.default).parsebytes(raw)  # type: ignore[assignment]
 
-        reason = filter_reason(msg, self.settings.mail.address, self._enrolled_at())
-        if reason is not None:
-            self.audit.record(status="filtered", reason=reason, uid=uid, **self._describe(msg))
+        # Anyone on the internet can send this mailbox anything, and the standard library's header
+        # parser raises on some malformed headers. One such email must cost one email, not the
+        # gateway: it is audited and skipped, and the watcher moves on to the next.
+        try:
+            msg: EmailMessage = BytesParser(policy=policy.default).parsebytes(raw)  # type: ignore[assignment]
+            reason = filter_reason(msg, self.settings.mail.address, self._enrolled_at())
+            description = self._describe(msg)
+            payload = (
+                None
+                if reason is not None
+                else build_inbound_payload(msg, uid, self.settings.max_inbound_text_chars)
+            )
+        except Exception as error:  # noqa: BLE001 - any parse failure is this email's problem only
+            logger.warning("email UID %d could not be read (%s); skipped", uid, type(error).__name__)
+            self.audit.record(status="unparseable", uid=uid, reason=type(error).__name__)
             self._advance(uid)
             return
 
-        payload = build_inbound_payload(msg, uid, self.settings.max_inbound_text_chars)
+        if payload is None:
+            self.audit.record(status="filtered", reason=reason, uid=uid, **description)
+            self._advance(uid)
+            return
+
         if self._forward(payload):
-            self.guard.remember_inbound([payload["from"]["address"], payload.get("replyTo")])
-            self.audit.record(status="forwarded", uid=uid, **self._describe(msg))
+            try:
+                self.guard.remember_inbound([payload["from"]["address"], payload.get("replyTo")])
+            except OSError as error:
+                logger.error("could not record the sender for replies: %s", error)
+            self.audit.record(status="forwarded", uid=uid, **description)
             self._advance(uid)
         elif not self._stopping.is_set():
-            self.audit.record(status="rejected_by_qlar", uid=uid, **self._describe(msg))
+            self.audit.record(status="rejected_by_qlar", uid=uid, **description)
             self._advance(uid)
 
     def _forward(self, payload: dict[str, Any]) -> bool:
@@ -325,7 +365,25 @@ class MailboxWatcher:
 
     def _advance(self, uid: int) -> None:
         self.state.last_uid = uid
-        self.state.save(self.settings.state_file)
+        self._save_state()
+
+    def _save_state(self) -> None:
+        """Saves the state file; a failure is a disk problem, said as one, not a network one.
+
+        Raising here would land in the connection handler, report the mailbox as unreachable and
+        re-forward the same email in a loop while the operator looks at the network. The position
+        is kept in memory and the next successful save catches up; Qlar de-duplicates anything
+        re-sent after a restart.
+        """
+        try:
+            self.state.save(self.settings.state_file)
+        except OSError as error:
+            logger.error(
+                "could not write %s (%s); the gateway keeps working but will re-send recent mail after a "
+                "restart until this is fixed",
+                self.settings.state_file,
+                error,
+            )
 
     def _enrolled_at(self) -> datetime:
         try:

@@ -2,7 +2,7 @@
 #
 # Copy to docker-compose.yml, put your settings in .env next to it, then:
 #
-#   docker compose run --rm gateway test-db   # optional: check the database first
+#   docker compose run --rm gateway --env-file /state/.env test-mailbox --init   # answer the mailbox questions once
 #   docker compose up -d                      # enrol and serve
 #   docker compose logs -f                    # read the fingerprint, then approve in the CMS
 #
@@ -18,7 +18,9 @@ services:
     image: ghcr.io/pusakaai/email-gateway:0.1.0
     container_name: qlar-email-gateway
     restart: unless-stopped
-    command: ["enroll"]
+    # Mailbox settings live in /state/.env (written by the `--init` run above, on the volume, so the
+    # read-only root filesystem is never written); QLAR_BASE_URL and the code come from env_file.
+    command: ["--env-file", "/state/.env", "enroll"]
     env_file: .env
     volumes:
       # The gateway's identity (key pair), its enrolment state and your audit log.

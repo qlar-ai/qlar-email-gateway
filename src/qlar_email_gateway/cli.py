@@ -54,6 +54,10 @@ from .wizard import SetupAborted, ask_enrollment_code, can_prompt, check_connect
 
 DEFAULT_ENV_FILE = ".env"
 
+# Whether QLAR_BASE_URL was in the real environment before any file or argument was read: then
+# it needs no saving (the next start gets it the same way), and the filesystem may be read-only.
+_endpoint_from_environment = False
+
 # The commands that need mailbox settings, and so may offer the setup prompts.
 SETUP_COMMANDS = ("run", "test-mailbox", "enroll")
 
@@ -102,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("version", help="print version and protocol information")
 
     args = parser.parse_args(argv)
+    global _endpoint_from_environment
+    _endpoint_from_environment = bool(os.environ.get("QLAR_BASE_URL", "").strip())
     console.make_output_safe()
     _configure_logging(args.log_level)
 
@@ -282,7 +288,17 @@ def _remember_base_url(settings: Settings, env_file: Path) -> None:
     if os.environ.get("QLAR_BASE_URL") == settings.base_url and _env_file_has(env_file, "QLAR_BASE_URL"):
         return
 
-    write_env_values(env_file, {"QLAR_BASE_URL": settings.base_url})
+    if _endpoint_from_environment and os.environ.get("QLAR_BASE_URL", "").rstrip("/") == settings.base_url:
+        return  # a container or unit sets it on every start; there is nothing to remember
+
+    try:
+        write_env_values(env_file, {"QLAR_BASE_URL": settings.base_url})
+    except OSError as error:
+        print(
+            f"warning: could not save QLAR_BASE_URL to {env_file} ({error}); "
+            "set it in the environment or pass --base-url on the next start",
+            file=sys.stderr,
+        )
 
 
 def _env_file_has(env_file: Path, key: str) -> bool:

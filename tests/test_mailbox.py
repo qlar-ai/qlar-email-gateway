@@ -364,3 +364,93 @@ def test_no_idle_capability_polls_at_interval(tmp_path):
     assert harness.sleeps[-1] == 45
     assert "idle" not in imap.calls
     assert harness.status.get() == "ok"
+
+
+# -- review fixes ---------------------------------------------------------------------------------
+
+MALFORMED = (
+    b'From: someone@customer.test\r\nTo: "\r\nSubject: broken\r\n'
+    b"Message-ID: <m11@customer.test>\r\nDate: Wed, 07 Oct 2026 09:00:00 +0000\r\n\r\nbody\r\n"
+)
+
+
+def test_an_unparseable_email_is_audited_and_skipped(tmp_path):
+    # Python's header parser raises IndexError on `To: "`; one such email must not stop the watcher.
+    imap = FakeImap({11: MALFORMED, 12: raw_email(12)})
+    harness = Harness(tmp_path, imap)
+
+    harness.run_until_poll_wait()
+
+    assert [payload["uid"] for payload in harness.qlar.posts] == [12]
+    assert harness.state.last_uid == 12
+    first = harness.audit()[0]
+    assert (first["status"], first["uid"]) == ("unparseable", 11)
+
+
+def test_idle_that_returns_at_once_counts_as_a_drop(tmp_path):
+    # Real imapclient returns [] immediately when the server closes the connection during IDLE.
+    imap = FakeImap({}, capabilities=(b"IMAP4REV1", b"IDLE"))
+    imap.uidnext = 11
+    imap.idle_check_effect = lambda: []
+    harness = Harness(tmp_path, imap)
+
+    harness.run_until_poll_wait()
+
+    assert imap.calls.count("idle_check") == 4, "each immediate return is a drop, not a spin"
+    assert harness.status.get() == "idle_unsupported"
+
+
+def test_bye_during_idle_counts_as_a_drop(tmp_path):
+    imap = FakeImap({}, capabilities=(b"IMAP4REV1", b"IDLE"))
+    imap.uidnext = 11
+    harness = Harness(tmp_path, imap)
+
+    def bye():
+        harness.now += timedelta(seconds=5)
+        return [(b"BYE", b"Server shutting down")]
+
+    imap.idle_check_effect = bye
+
+    harness.run_until_poll_wait()
+
+    assert harness.status.get() == "idle_unsupported"
+
+
+def test_mail_arriving_during_a_sync_is_fetched_without_waiting_for_more_mail(tmp_path):
+    imap = FakeImap({11: raw_email(11)}, capabilities=(b"IMAP4REV1", b"IDLE"))
+    imap.uidnext = 11
+    harness = Harness(tmp_path, imap)
+    harness.state.last_uid = 10
+
+    def arrive_during_post(payload):
+        if payload["uid"] == 11:
+            imap.messages[12] = raw_email(12)  # its EXISTS notice is lost: it came during the POST
+        if payload["uid"] == 12:
+            harness.watcher.stop()
+
+    harness.qlar.on_post = arrive_during_post
+
+    def quiet_minute():
+        harness.now += timedelta(seconds=60)
+        return []
+
+    imap.idle_check_effect = quiet_minute
+
+    harness.watcher.run_forever()
+
+    assert [payload["uid"] for payload in harness.qlar.posts] == [11, 12]
+
+
+def test_a_state_file_that_cannot_be_written_does_not_look_like_a_network_failure(tmp_path, monkeypatch):
+    imap = FakeImap({11: raw_email(11), 12: raw_email(12)})
+    harness = Harness(tmp_path, imap)
+
+    def disk_full(self, path):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(EnrollmentState, "save", disk_full)
+
+    harness.run_until_poll_wait()
+
+    assert [payload["uid"] for payload in harness.qlar.posts] == [11, 12]
+    assert harness.status.get() == "ok"

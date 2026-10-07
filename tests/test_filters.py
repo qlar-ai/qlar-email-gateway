@@ -103,3 +103,11 @@ def test_unparseable_date_forwards():
 
 def test_order_auto_submitted_before_own_address():
     assert reason(From=MAILBOX, Auto_Submitted="auto-replied") == "auto_submitted"
+
+
+@pytest.mark.parametrize(
+    "sender", ["noreply-billing@x.test", "no-reply.alerts@x.test", "noreply+abc@x.test", "postmaster2@x.test"]
+)
+def test_system_sender_prefixes(sender):
+    # FR-22: senders *starting with* these names, not only equal to them.
+    assert reason(From=sender) == "system_sender"

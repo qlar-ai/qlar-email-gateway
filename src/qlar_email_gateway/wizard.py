@@ -239,7 +239,7 @@ def _describe_existing(env_file: Path) -> str:
     is never visible: the file is in another directory, or the shell that wrote it used an
     encoding this cannot read, or the line is subtly not a setting. Naming the keys that
     were understood answers all three at a glance — and names only, never values, because
-    one of them is a database password.
+    one of them is the mailbox password.
     """
     if not env_file.exists():
         return "no file there yet, so nothing is filled in for you"

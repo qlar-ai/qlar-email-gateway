@@ -397,3 +397,46 @@ class TestEnrollingInOneLine:
         assert seen["base_url"] == ENDPOINT
         assert console.answers == []
         assert not any("endpoint" in prompt.lower() for prompt in console.prompts)
+
+
+class TestReadOnlyContainers:
+    """`docker-compose.example.yml` runs with a read-only root filesystem and the settings in the
+    real environment; enrolment must not try (and fail) to write them into a `.env` there."""
+
+    def _capture(self, monkeypatch) -> dict:
+        seen: dict = {}
+
+        def fake_enroll(settings):
+            seen["base_url"] = settings.base_url
+            raise cli.EnrollmentError("stopping here")
+
+        monkeypatch.setattr(cli, "enroll", fake_enroll)
+        monkeypatch.setattr(wizard, "test_mailbox", _mailbox(True))
+        monkeypatch.setattr(cli, "can_prompt", lambda: False)
+        return seen
+
+    def test_an_endpoint_from_the_environment_is_not_written(self, tmp_path, monkeypatch):
+        seen = self._capture(monkeypatch)
+        for line in COMPLETE_ENV:
+            key, _, value = line.partition("=")
+            monkeypatch.setenv(key, value)
+        env_file = tmp_path / ".env"
+
+        cli.main(["--env-file", str(env_file), "enroll", "--code", "X"])
+
+        assert seen["base_url"] == ENDPOINT
+        assert not env_file.exists()
+
+    def test_an_unwritable_env_file_is_a_warning_not_a_crash(self, tmp_path, monkeypatch, capsys):
+        seen = self._capture(monkeypatch)
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV[1:])
+
+        def read_only(*_args, **_kwargs):
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr(cli, "write_env_values", read_only)
+
+        cli.main(["--env-file", str(env_file), "enroll", "--base-url", ENDPOINT, "--code", "X"])
+
+        assert seen["base_url"] == ENDPOINT
+        assert "could not save QLAR_BASE_URL" in capsys.readouterr().err

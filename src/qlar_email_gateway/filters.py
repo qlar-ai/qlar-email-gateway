@@ -15,8 +15,8 @@ from datetime import UTC, datetime
 from email.message import EmailMessage
 from email.utils import parseaddr, parsedate_to_datetime
 
-#: Local parts that are never a person. Matched case-insensitively.
-SYSTEM_LOCAL_PARTS = frozenset({"mailer-daemon", "postmaster", "noreply", "no-reply"})
+#: Local-part prefixes that are never a person. Matched case-insensitively.
+SYSTEM_LOCAL_PARTS = ("mailer-daemon", "postmaster", "noreply", "no-reply")
 
 #: Precedence values that mean "not a conversation".
 BULK_PRECEDENCE = frozenset({"bulk", "list", "junk"})
@@ -47,7 +47,8 @@ def filter_reason(msg: EmailMessage, mailbox_address: str, enrolled_at: datetime
     if sender and sender == mailbox_address.strip().lower():
         return "own_address"
 
-    if sender.partition("@")[0] in SYSTEM_LOCAL_PARTS:
+    # "Starting with" (FR-22): noreply-billing@, no-reply.alerts@ and noreply+tag@ are machines too.
+    if sender.partition("@")[0].startswith(SYSTEM_LOCAL_PARTS):
         return "system_sender"
 
     sent_at = _parse_date(msg.get("Date"))

@@ -1,8 +1,8 @@
 # Releasing
 
 How a version of the gateway is cut and published. The deployment runbook for the Qlar
-side lives in the `Plugins-pack` repository
-(`docs/db-gateway-deployment-runbook.md`); this page covers only this repository.
+side lives in the `Messenger-BE` repository
+(`docs/email-gateway-runbook.md`); this page covers only this repository.
 
 ## The ordering rule
 
