@@ -26,7 +26,7 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
             imap_host="imap.corp.test",
             smtp_host="smtp.corp.test",
             user="ask@corp.test",
-            password="pw",
+            password="Unmistakable-Pa55word",
             address="ask@corp.test",
         ),
     )
@@ -56,7 +56,7 @@ def test_enroll_sends_mailbox_address_and_idle_flag(tmp_path, captured):
     assert payload["protocol"] == 1
     assert payload["version"] == "0.1.0"
     assert "providers" not in payload
-    assert "pw" not in str(payload.values())
+    assert "Unmistakable-Pa55word" not in str(payload.values())
     assert payload["fingerprint"] == key_fingerprint
 
     assert state.mailbox_address == "ask@corp.test"
