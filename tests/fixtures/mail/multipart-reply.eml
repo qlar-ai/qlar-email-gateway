@@ -1,0 +1,27 @@
+From: =?utf-8?b?QnVkaSBTYW50b3Nv?= <Budi@Customer.Test>
+To: Support <ASK@Corp.Test>, other@corp.test
+Cc: Ani <Ani@Customer.Test>
+Reply-To: Team@Customer.Test
+Subject: Re: Harga paket
+Date: Wed, 07 Oct 2026 16:00:00 +0700
+Message-ID: <m2@customer.test>
+In-Reply-To: <qlar-1@corp.test>
+References: <root@customer.test>
+ <qlar-1@corp.test>
+Auto-Submitted: no
+Precedence: normal
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+Kalau paket B berapa?
+
+On Wed, 7 Oct 2026 at 15:00, Support <ask@corp.test> wrote:
+> Harga paket A Rp100rb.
+--b1
+Content-Type: text/html; charset=utf-8
+
+<p>HTML version should not be used</p>
+--b1--

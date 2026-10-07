@@ -1,0 +1,11 @@
+From: Budi <budi@customer.test>
+To: ask@corp.test
+Subject: Pertanyaan
+Date: Wed, 07 Oct 2026 09:00:00 +0000
+Message-ID: <outlook-html@customer.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=windows-1252
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><style>p {color: red;}</style><script>alert(1)</script></head>
+<body><p>Halo tim,</p><p>Berapa harga paket A?</p><p>Terima kasih =96 Budi</p></body></html>
