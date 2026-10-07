@@ -18,27 +18,49 @@ registering someone else's machine.
 
 from __future__ import annotations
 
+import logging
 import platform
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
 from .client import QlarClient, QlarNotAnEndpoint, QlarRejected
-from .config import EnrollmentState, Settings
+from .config import EnrollmentState, MailSettings, Settings
 from .crypto import fingerprint, load_or_create_private_key, public_key_pem
 
 ENROLL_PATH = "/enroll"
+
+logger = logging.getLogger("qlar_email_gateway.enroll")
+
+
+def probe_idle(mail: MailSettings) -> bool:
+    """Whether the IMAP server offers IDLE, from one short login. Shown to the operator in the CMS."""
+    from .mailbox import default_imap_factory
+
+    client: Any = default_imap_factory(mail)
+    try:
+        client.login(mail.user, mail.password)
+        return b"IDLE" in tuple(client.capabilities())
+    finally:
+        try:
+            client.logout()
+        except Exception:  # noqa: BLE001, S110 - best effort on the way out
+            pass
 
 
 class EnrollmentError(Exception):
     pass
 
 
-def enroll(settings: Settings) -> tuple[EnrollmentState, str]:
+def enroll(
+    settings: Settings, idle_probe: Callable[[MailSettings], bool] = probe_idle
+) -> tuple[EnrollmentState, str]:
     """Registers this gateway with Qlar. Returns the new state and the key fingerprint."""
     if not settings.enrollment_code:
         raise EnrollmentError(
             "QLAR_ENROLLMENT_CODE is not set. Copy the code shown in the Qlar CMS "
-            "(Plugins -> SQL Database Reader -> Gateway) into your .env and run again."
+            "(agent -> Channels -> Email) into your .env, or pass --code, and run again."
         )
 
     existing = EnrollmentState.load(settings.state_file)
@@ -68,7 +90,8 @@ def enroll(settings: Settings) -> tuple[EnrollmentState, str]:
         "platform": f"{platform.system()} {platform.release()}",
         "version": __version__,
         "protocol": PROTOCOL_VERSION,
-        "providers": [settings.database.provider],
+        "mailboxAddress": settings.mail.address,
+        "idleSupported": _idle_supported(settings.mail, idle_probe),
     }
 
     try:
@@ -81,7 +104,7 @@ def enroll(settings: Settings) -> tuple[EnrollmentState, str]:
             f"{wrong_address}.\n"
             f"  That is not Qlar's API, so the enrolment code was never seen. QLAR_BASE_URL is\n"
             f"  currently {settings.base_url} - it must be the API endpoint shown in the CMS\n"
-            "  gateway panel, which ends in /api/email-gateway, not the address of the Qlar web\n"
+            "  email panel, which ends in /api/email-gateway, not the address of the Qlar web\n"
             "  interface. Fix it in .env, or run: qlar-email-gateway enroll --init"
         ) from wrong_address
     except QlarRejected as rejection:
@@ -105,10 +128,17 @@ def enroll(settings: Settings) -> tuple[EnrollmentState, str]:
         qlar_public_key_pem=str(qlar_public_key),
         enrolled_at=datetime.now(UTC).isoformat(),
         base_url=settings.base_url,
+        mailbox_address=settings.mail.address,
     )
     state.save(settings.state_file)
 
-    if created:
-        pass  # the key file was written with 0600 by load_or_create_private_key
-
     return state, key_fingerprint
+
+
+def _idle_supported(mail: MailSettings, idle_probe: Callable[[MailSettings], bool]) -> bool:
+    """Best effort: a mailbox that cannot be reached right now must not block enrolment."""
+    try:
+        return bool(idle_probe(mail))
+    except Exception as error:  # noqa: BLE001 - informational only
+        logger.warning("could not check IDLE support (%s); enrolling without it", type(error).__name__)
+        return False

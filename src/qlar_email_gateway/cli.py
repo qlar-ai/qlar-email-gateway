@@ -2,24 +2,25 @@
 
 Five commands, in the order an operator meets them:
 
-    test-db      check the database credentials before involving Qlar at all
-    enroll       register with Qlar and serve — the only command most people need
-    fingerprint  print this gateway's key fingerprint, to compare with the CMS
-    run          serve, for a machine that is already enrolled
-    version      what is installed, and which protocol it speaks
+    test-mailbox  log in to IMAP and SMTP before involving Qlar at all
+    enroll        register with Qlar and serve — the only command most people need
+    fingerprint   print this gateway's key fingerprint, to compare with the CMS
+    run           serve, for a machine that is already enrolled
+    version       what is installed, and which protocol it speaks
 
-`enroll` is the whole installation. It enrols if this machine is not enrolled yet, prints
-the fingerprint to compare, and then stays up and polls — including through the wait for
-someone to click Approve. Running it again on an enrolled machine skips enrolment and goes
-straight to serving, which is what a container restart does. `run` remains for service
-definitions that would rather not carry an enrolment step at all; it is the same loop.
+`enroll` is the whole installation. It enrols if this machine is not enrolled yet, prints the
+fingerprint to compare, and then stays up — including through the wait for someone to click
+Approve. Running it again on an enrolled machine skips enrolment and goes straight to serving,
+which is what a container restart does. `run` remains for service definitions that would rather
+not carry an enrolment step at all; it is the same thing.
 
-`run`, `test-db` and `enroll` need database settings. When those are missing and there is
-a terminal to ask on, the setup prompts in `wizard.py` collect them and write `.env`
-instead of printing a configuration error — so a fresh install is `pip install` then
-`enroll`, with nothing to read first. `--init` runs those prompts even when `.env` is
-already complete. Without a terminal — a container, a systemd unit — nothing changes: the
-same configuration error as before, on stderr, with the same exit code.
+Serving is two loops sharing one identity: the mailbox watcher (IMAP → Qlar) and the job loop
+(Qlar → SMTP).
+
+`run`, `test-mailbox` and `enroll` need mailbox settings. When those are missing and there is a
+terminal to ask on, the setup prompts in `wizard.py` collect them and write `.env` instead of
+printing a configuration error. Without a terminal — a container, a systemd unit — the
+configuration error is printed on stderr, with the same exit code.
 """
 
 from __future__ import annotations
@@ -29,10 +30,12 @@ import logging
 import os
 import signal
 import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 
 from . import PROTOCOL_VERSION, __version__, console
+from .client import Revoked
 from .config import (
     ConfigError,
     EnrollmentState,
@@ -44,19 +47,21 @@ from .config import (
 )
 from .crypto import fingerprint, load_or_create_private_key, public_key_pem
 from .enroll import EnrollmentError, enroll
+from .mailbox import MailboxWatcher
 from .poll import PollLoop
+from .status import MailboxStatus
 from .wizard import SetupAborted, ask_enrollment_code, can_prompt, check_connection, run_setup
 
 DEFAULT_ENV_FILE = ".env"
 
-# The commands that need database settings, and so may offer the setup prompts.
-SETUP_COMMANDS = ("run", "test-db", "enroll")
+# The commands that need mailbox settings, and so may offer the setup prompts.
+SETUP_COMMANDS = ("run", "test-mailbox", "enroll")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="qlar-email-gateway",
-        description="On-premise SQL access gateway for Qlar. Outbound-only: no inbound port is opened.",
+        description="On-premise email gateway for Qlar. Outbound-only: no inbound port is opened.",
     )
     parser.add_argument(
         "--env-file", default=DEFAULT_ENV_FILE, help="path to the settings file (default: .env)"
@@ -70,9 +75,7 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     _with_init_flag(
-        subparsers.add_parser(
-            "run", help="poll Qlar for jobs and execute them (already enrolled machines)"
-        )
+        subparsers.add_parser("run", help="watch the mailbox and send replies (already enrolled machines)")
     )
     enroll_parser = _with_init_flag(
         subparsers.add_parser(
@@ -86,14 +89,14 @@ def main(argv: list[str] | None = None) -> int:
     # `echo KEY=value >> .env` instead.
     enroll_parser.add_argument(
         "--base-url",
-        help="the Qlar API endpoint, as the CMS gateway panel prints it (saved to .env)",
+        help="the Qlar API endpoint, as the CMS email panel prints it (saved to .env)",
     )
     enroll_parser.add_argument(
         "--code",
         help="the one-time enrolment code from the CMS (single use; not saved)",
     )
     _with_init_flag(
-        subparsers.add_parser("test-db", help="verify the database settings without contacting Qlar")
+        subparsers.add_parser("test-mailbox", help="log in to IMAP and SMTP without contacting Qlar")
     )
     subparsers.add_parser("fingerprint", help="print this gateway's public key fingerprint")
     subparsers.add_parser("version", help="print version and protocol information")
@@ -111,14 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     if settings is None:
         return 2
 
-    if args.command == "test-db":
-        return _command_test_db(settings, connection_ok)
+    if args.command == "test-mailbox":
+        return _command_test_mailbox(settings, connection_ok)
     if args.command == "fingerprint":
         return _command_fingerprint(settings)
     if args.command == "enroll":
-        return _command_enroll(
-            settings, Path(args.env_file), getattr(args, "code", None), connection_ok
-        )
+        return _command_enroll(settings, Path(args.env_file), getattr(args, "code", None), connection_ok)
     if args.command == "run":
         return _command_run(settings, connection_ok)
 
@@ -130,7 +131,7 @@ def _with_init_flag(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--init",
         "-init",
         action="store_true",
-        help="ask for the database details again, even when .env is already filled in",
+        help="ask for the mailbox details again, even when .env is already filled in",
     )
     return parser
 
@@ -138,7 +139,7 @@ def _with_init_flag(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 def _settings_for(args: argparse.Namespace) -> tuple[Settings | None, bool | None]:
     """Loads the settings, running the setup prompts when that is the helpful thing to do.
 
-    Returns the settings and whether the database connection has already been tested:
+    Returns the settings and whether the mailbox login has already been tested:
     True or False when the prompts tested it, None when nothing has been checked yet. That
     third state is what stops `run` from opening two connections to say the same thing.
     """
@@ -183,7 +184,7 @@ def _run_setup(
         return None, None
 
 
-def _command_test_db(settings: Settings, connection_ok: bool | None) -> int:
+def _command_test_mailbox(settings: Settings, connection_ok: bool | None) -> int:
     # The check itself lives with the setup prompts: it is the same paragraph of output
     # there and here, and an operator comparing the two should not have to wonder whether
     # they mean the same thing.
@@ -203,7 +204,7 @@ def _command_fingerprint(settings: Settings) -> int:
 def _command_enroll(
     settings: Settings, env_file: Path, code: str | None = None, connection_ok: bool | None = None
 ) -> int:
-    """Makes sure this machine is enrolled, then serves queries. One command, start to finish.
+    """Makes sure this machine is enrolled, then serves. One command, start to finish.
 
     There used to be a second one. `enroll` printed a fingerprint and exited, and the operator
     was told to come back and type `run` after clicking Approve — a handover across a wait of
@@ -259,7 +260,7 @@ def _command_enroll(
     print()
     console.fingerprint_block(key_fingerprint)
     print()
-    console.step(1, "CMS -> your agent -> Plugins -> SQL Database Reader")
+    console.step(1, "CMS -> your agent -> Channels -> Email")
     console.step(2, "check the fingerprint matches, then click Approve")
     console.step(3, "nothing. This keeps running and starts working when you do.")
     print()
@@ -324,39 +325,62 @@ def _command_run(settings: Settings, connection_ok: bool | None) -> int:
 
 
 def _serve(settings: Settings, state: EnrollmentState, connection_ok: bool | None) -> int:
-    """Checks the database, then polls until stopped or revoked.
+    """Checks the mailbox, then watches it and answers jobs until stopped or revoked.
 
-    Shared by `run` and `enroll`, which differ only in how they got hold of the enrolment.
+    Shared by `run` and `enroll`, which differ only in how they got hold of the enrolment. The
+    two loops share the signing key, the HTTP client, the state file, the send guard's memory and
+    the mailbox status; either one learning that the gateway is revoked stops both.
     """
-    # A gateway that polls happily while every query fails looks healthy in the CMS, and that
-    # is the most confusing way for an installation to be broken.
     if connection_ok is None:
         connection_ok = check_connection(settings)
     if not connection_ok:
         console.warning(
             "Starting anyway",
-            "The database may simply be down at this moment, and the gateway reports its",
-            "state to Qlar on every poll, so the CMS shows the data source as unreachable.",
+            "The mail server may simply be unreachable at this moment. The gateway keeps",
+            "retrying and reports the mailbox state to Qlar on every poll.",
             "",
-            "Run `qlar-email-gateway run --init` to re-enter the connection details.",
+            "Run `qlar-email-gateway run --init` to re-enter the mailbox details.",
             file=sys.stderr,
         )
 
     print()
-    print("  Polling for work. Ctrl-C stops it; jobs already running finish first.")
+    print(f"  Watching {settings.mail.address} and polling for replies. Ctrl-C stops it.")
     print()
 
-    loop = PollLoop(settings, state)
+    log = logging.getLogger("qlar_email_gateway")
+    status = MailboxStatus()
+    loop = PollLoop(settings, state, status=status)
+    watcher = MailboxWatcher(settings, state, loop.client, loop.audit, loop.guard, status)
+    outcome = {"exit": 0}
+
+    def watch() -> None:
+        try:
+            watcher.run_forever()
+        except Revoked:
+            log.error("this gateway has been revoked in the Qlar CMS; stopping")
+            loop.stop()
+        except Exception:
+            # A bug, not a mail server problem (those are retried inside). Stop everything so a
+            # supervisor restarts the process rather than leaving half a gateway running.
+            log.exception("the mailbox watcher stopped unexpectedly")
+            outcome["exit"] = 1
+            loop.stop()
+
+    thread = threading.Thread(target=watch, name="qlar-mailbox", daemon=True)
 
     def _handle_signal(signum, _frame):  # noqa: ANN001 - signal handler signature
-        logging.getLogger("qlar_email_gateway").info("received signal %s, finishing in-flight jobs", signum)
+        log.info("received signal %s, finishing in-flight jobs", signum)
+        watcher.stop()
         loop.stop()
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
+    thread.start()
     loop.run_forever()
-    return 0
+    watcher.stop()
+    thread.join(timeout=10)
+    return outcome["exit"]
 
 
 def _configure_logging(level: str) -> None:

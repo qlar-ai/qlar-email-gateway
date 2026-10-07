@@ -130,9 +130,7 @@ class TestSayingWhatWasRead:
         from qlar_email_gateway.wizard import _describe_existing
 
         env_file = tmp_path / ".env"
-        env_file.write_text(
-            f"# a comment\nQLAR_BASE_URL={BASE_URL}\nDB_PASSWORD=hunter2\n", encoding="utf-8"
-        )
+        env_file.write_text(f"# a comment\nQLAR_BASE_URL={BASE_URL}\nDB_PASSWORD=hunter2\n", encoding="utf-8")
 
         described = _describe_existing(env_file)
 

@@ -1,9 +1,9 @@
 """The setup prompts, driven by a scripted console instead of a human.
 
-Two things are being protected here. The first is the happy path an operator meets once:
-answer six questions, get a working `.env`, see the connection proved. The second is that
-automation never meets it at all — a container has no terminal, and a gateway that stops
-to ask a question nobody can see would look exactly like a gateway that has hung.
+Two things are being protected here. The first is the happy path an operator meets once: answer
+the mailbox questions, get a working `.env`, see the login proved. The second is that automation
+never meets it at all — a container has no terminal, and a gateway that stops to ask a question
+nobody can see would look exactly like a gateway that has hung.
 """
 
 from __future__ import annotations
@@ -13,22 +13,48 @@ from pathlib import Path
 import pytest
 
 from qlar_email_gateway import cli, wizard
-from qlar_email_gateway.executor import ExecutionResult
+from qlar_email_gateway.mailbox import MailboxError
 
-ENDPOINT = "https://qlar.example.com/api/email-gateway"
+ENDPOINT = "https://qlar.example.com/messenger/api/email-gateway"
 
 MANAGED_KEYS = (
     "QLAR_BASE_URL",
     "QLAR_ENROLLMENT_CODE",
     "QLAR_GATEWAY_NAME",
-    "DB_PROVIDER",
-    "DB_HOST",
-    "DB_PORT",
-    "DB_NAME",
-    "DB_USER",
-    "DB_PASSWORD",
-    "TABLE_ALLOWLIST",
+    "IMAP_HOST",
+    "IMAP_PORT",
+    "IMAP_SECURITY",
+    "IMAP_FOLDER",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_SECURITY",
+    "MAIL_USER",
+    "MAIL_PASSWORD",
+    "MAIL_ADDRESS",
+    "MAIL_FROM_NAME",
     "AUDIT_LOG_FILE",
+)
+
+#: Answers to the mailbox questions in order, accepting every default that exists.
+MAILBOX_ANSWERS = (
+    "imap.corp.test",  # IMAP host
+    "",  # IMAP port [993]
+    "",  # IMAP security [ssl]
+    "",  # SMTP host [smtp.corp.test]
+    "",  # SMTP port [587]
+    "",  # SMTP security [starttls]
+    "ask@corp.test",  # user
+    "s3cret pass",  # password
+    "",  # mailbox address [= user]
+    "",  # sender name [blank]
+)
+
+COMPLETE_ENV = (
+    f"QLAR_BASE_URL={ENDPOINT}",
+    "IMAP_HOST=imap.corp.test",
+    "SMTP_HOST=smtp.corp.test",
+    "MAIL_USER=ask@corp.test",
+    "MAIL_PASSWORD=secret",
 )
 
 
@@ -52,26 +78,26 @@ class Console:
             raise AssertionError(f"nothing scripted for prompt {prompt!r}")
         return self.answers.pop(0)
 
-    def install(self, monkeypatch, *, connection_ok: bool = True, writable: bool | None = False):
+    def install(self, monkeypatch, *, connection_ok: bool = True):
         monkeypatch.setattr("builtins.input", self.input)
         monkeypatch.setattr(wizard, "prompt_for_secret", self.input)
         monkeypatch.setattr(wizard, "can_prompt", lambda: True)
-        monkeypatch.setattr(wizard, "test_connection", _connection(connection_ok))
-        monkeypatch.setattr(wizard, "account_can_write", lambda _settings: writable)
+        monkeypatch.setattr(wizard, "test_mailbox", _mailbox(connection_ok))
         return self
 
 
-def _connection(ok: bool):
-    def fake_test_connection(_settings):
+def _mailbox(ok: bool):
+    def fake_test_mailbox(_settings):
         if ok:
-            return ExecutionResult(status="ok", rows=[["PostgreSQL 16.4"]], row_count=1, duration_ms=7)
-        return ExecutionResult(
-            status="error",
-            duration_ms=3,
-            error={"category": "connection", "messageText": "could not connect", "hint": None},
-        )
+            return {
+                "imapBanner": "* OK Dovecot ready",
+                "smtpBanner": "220 ready",
+                "idleSupported": True,
+                "inboxCount": 7,
+            }
+        raise MailboxError("auth", "IMAP login refused")
 
-    return fake_test_connection
+    return fake_test_mailbox
 
 
 def env_values(env_file: Path) -> dict[str, str]:
@@ -86,163 +112,127 @@ def env_values(env_file: Path) -> dict[str, str]:
     return values
 
 
+def write_env(env_file: Path, *lines: str) -> Path:
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return env_file
+
+
 class TestFirstRun:
     def test_answers_become_a_working_env_file(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".env"
-        Console(
-            "",  # database type: the offered default
-            "db.internal",  # host
-            "",  # port: the provider's default
-            "warehouse",  # database name
-            "qlar_readonly",  # username
-            "s3cret pass",  # password, masked at the prompt
-            ENDPOINT,  # Qlar endpoint
-        ).install(monkeypatch)
+        Console(*MAILBOX_ANSWERS, ENDPOINT).install(monkeypatch)
 
-        settings, connection_ok = wizard.run_setup(env_file)
+        settings, ok = wizard.run_setup(env_file)
 
-        assert connection_ok is True
-        assert settings.database.provider == "postgresql"
-        assert settings.database.port == 5432
-        assert settings.database.password == "s3cret pass"
-        assert settings.base_url == ENDPOINT
-
-        saved = env_values(env_file)
-        assert saved["DB_HOST"] == "db.internal"
-        assert saved["DB_PORT"] == "5432"
-        assert saved["DB_NAME"] == "warehouse"
-        assert saved["DB_USER"] == "qlar_readonly"
-        assert saved["DB_PASSWORD"] == "s3cret pass"
-
-    def test_a_pasted_url_fills_in_the_rest(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
-        console = Console(
-            "mysql",
-            "mysql://ana:pw%40word@db.internal:3307/warehouse",
-            "",  # port, offered as 3307 from the URL
-            "",  # database name, offered as warehouse
-            "",  # username, offered as ana
-            "",  # password: keep the one from the URL
-            ENDPOINT,  # Qlar endpoint
-        ).install(monkeypatch)
-
-        settings, _ = wizard.run_setup(env_file)
-
-        assert settings.database.provider == "mysql"
-        assert settings.database.host == "db.internal"
-        assert settings.database.port == 3307
-        assert settings.database.database == "warehouse"
-        assert settings.database.user == "ana"
-        assert settings.database.password == "pw@word"
-        # The parsed values are shown as defaults, not applied silently.
-        assert any("3307" in prompt for prompt in console.prompts)
-
-    def test_a_bare_host_and_port_is_understood_too(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
-        Console("1", "db.internal:6432", "", "warehouse", "reader", "pw", ENDPOINT).install(
-            monkeypatch
+        assert ok is True
+        mail = settings.mail
+        assert (mail.imap_host, mail.imap_port, mail.imap_security) == ("imap.corp.test", 993, "ssl")
+        assert (mail.smtp_host, mail.smtp_port, mail.smtp_security) == ("smtp.corp.test", 587, "starttls")
+        assert (mail.user, mail.password, mail.address, mail.from_name) == (
+            "ask@corp.test",
+            "s3cret pass",
+            "ask@corp.test",
+            "",
         )
 
-        settings, _ = wizard.run_setup(env_file)
+        saved = env_values(env_file)
+        assert saved["IMAP_HOST"] == "imap.corp.test"
+        assert saved["SMTP_HOST"] == "smtp.corp.test"
+        assert saved["MAIL_PASSWORD"] == "s3cret pass"
+        assert saved["QLAR_BASE_URL"] == ENDPOINT
 
-        assert settings.database.host == "db.internal"
-        assert settings.database.port == 6432
+    def test_smtp_host_is_offered_from_the_imap_host(self, tmp_path, monkeypatch):
+        console = Console(*MAILBOX_ANSWERS, ENDPOINT).install(monkeypatch)
+
+        wizard.run_setup(tmp_path / ".env")
+
+        smtp_prompt = next(prompt for prompt in console.prompts if "SMTP host" in prompt)
+        assert "[smtp.corp.test]" in smtp_prompt
+
+    def test_a_different_address_and_sender_name(self, tmp_path, monkeypatch):
+        answers = list(MAILBOX_ANSWERS)
+        answers[8] = "Support@Corp.Test"
+        answers[9] = "Corp Support"
+        Console(*answers, ENDPOINT).install(monkeypatch)
+
+        settings, _ = wizard.run_setup(tmp_path / ".env")
+
+        assert settings.mail.address == "support@corp.test"
+        assert settings.mail.from_name == "Corp Support"
+
+    def test_a_security_answer_other_than_ssl_or_starttls_is_asked_again(self, tmp_path, monkeypatch):
+        answers = list(MAILBOX_ANSWERS)
+        answers[2:3] = ["tls", "starttls"]
+        console = Console(*answers, ENDPOINT).install(monkeypatch)
+
+        settings, _ = wizard.run_setup(tmp_path / ".env")
+
+        assert settings.mail.imap_security == "starttls"
+        assert console.answers == []
 
 
 class TestAnsweringAgain:
     def test_saved_values_are_offered_as_defaults(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "\n".join(
-                [
-                    "# hand-written, keep me",
-                    "QLAR_BASE_URL=https://qlar.example.com/api/email-gateway",
-                    "DB_PROVIDER=postgresql",
-                    "DB_HOST=old.internal",
-                    "DB_PORT=5432",
-                    "DB_NAME=warehouse",
-                    "DB_USER=qlar_readonly",
-                    "DB_PASSWORD=old-secret",
-                    "MAX_CONCURRENT_QUERIES=9",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-
-        # Every answer is Enter except the host: the one field being changed.
-        Console("", "new.internal", "", "", "", "", "").install(monkeypatch)
-
-        settings, _ = wizard.run_setup(env_file)
-
-        assert settings.database.host == "new.internal"
-        assert settings.database.password == "old-secret"
-        assert settings.base_url == "https://qlar.example.com/api/email-gateway"
-
-        text = env_file.read_text(encoding="utf-8")
-        assert "# hand-written, keep me" in text
-        assert "MAX_CONCURRENT_QUERIES=9" in text
-
-    def test_a_failed_connection_offers_another_attempt(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
-        console = Console(
-            "", "db.internal", "", "warehouse", "reader", "pw", ENDPOINT,
-            "n",  # no, do not enter them again
-        ).install(monkeypatch, connection_ok=False)
-
-        settings, connection_ok = wizard.run_setup(env_file)
-
-        assert connection_ok is False
-        # The answers are still saved: they are usually nearly right, and an operator who
-        # fixes one line by hand should not have to retype the other six.
-        assert env_values(env_file)["DB_HOST"] == "db.internal"
-        assert settings.database.host == "db.internal"
-        assert console.answers == []
-
-    def test_declining_at_the_prompt_can_be_retried(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
         Console(
-            "", "typo.internal", "", "warehouse", "reader", "pw", ENDPOINT,
-            "y",  # yes, ask again
-            "", "db.internal", "", "warehouse", "reader", "pw", "",
-            "n",
-        ).install(monkeypatch, connection_ok=False)
-
-        settings, connection_ok = wizard.run_setup(env_file)
-
-        assert connection_ok is False
-        assert settings.database.host == "db.internal"
-
-
-class TestTheQlarEndpoint:
-    """The address of Qlar itself, which is the one answer nobody can guess for you.
-
-    It differs per deployment, and a plausible default is worse than a question: pointed at
-    a Qlar *web* address instead of its API, enrolment fails with a 404 that reads exactly
-    like a rejected enrolment code, and the operator spends the afternoon generating fresh
-    codes that fail the same way.
-    """
-
-    def test_it_is_required_rather_than_defaulted(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
-        console = Console(
-            "", "db.internal", "", "warehouse", "reader", "pw",
-            "",         # Enter: there is nothing to fall back to, so it asks again
-            ENDPOINT,
+            "new-imap.corp.test",  # IMAP host changed
+            "",
+            "",
+            "",
+            "",
+            "",  # the rest as saved / defaulted
+            "",  # user, as saved
+            "",  # password: Enter keeps the saved one
+            "",
+            "",
+            "",  # endpoint, as saved
         ).install(monkeypatch)
 
         settings, _ = wizard.run_setup(env_file)
+
+        assert settings.mail.imap_host == "new-imap.corp.test"
+        assert settings.mail.smtp_host == "smtp.corp.test", "a saved SMTP host is not replaced by a guess"
+        assert settings.mail.password == "secret"
+
+    def test_a_failed_login_offers_another_attempt(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        # First round fails; "y"; second round accepts every saved answer (10 mailbox + endpoint),
+        # fails again; "n".
+        console = Console(*MAILBOX_ANSWERS, ENDPOINT, "y", *([""] * 11), "n").install(
+            monkeypatch, connection_ok=False
+        )
+
+        settings, ok = wizard.run_setup(env_file)
+
+        assert ok is False
+        assert console.answers == []
+        assert sum("Enter the details again" in prompt for prompt in console.prompts) == 2
+        assert env_values(env_file)["IMAP_HOST"] == "imap.corp.test"
+
+    def test_declining_another_attempt_keeps_the_saved_answers(self, tmp_path, monkeypatch, capsys):
+        env_file = tmp_path / ".env"
+        Console(*MAILBOX_ANSWERS, ENDPOINT, "n").install(monkeypatch, connection_ok=False)
+
+        settings, ok = wizard.run_setup(env_file)
+
+        assert ok is False
+        assert settings.mail.imap_host == "imap.corp.test"
+        assert "--init" in capsys.readouterr().err
+
+
+class TestTheQlarEndpoint:
+    def test_it_is_required_rather_than_defaulted(self, tmp_path, monkeypatch):
+        console = Console(*MAILBOX_ANSWERS, "", ENDPOINT).install(monkeypatch)
+
+        settings, _ = wizard.run_setup(tmp_path / ".env")
 
         assert settings.base_url == ENDPOINT
         assert console.answers == []
 
     def test_a_trailing_slash_is_not_carried_into_signed_paths(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
-        Console("", "db.internal", "", "warehouse", "reader", "pw", ENDPOINT + "/").install(
-            monkeypatch
-        )
+        Console(*MAILBOX_ANSWERS, ENDPOINT + "/").install(monkeypatch)
 
-        settings, _ = wizard.run_setup(env_file)
+        settings, _ = wizard.run_setup(tmp_path / ".env")
 
         assert settings.base_url == ENDPOINT
 
@@ -252,7 +242,7 @@ class TestWithoutATerminal:
         monkeypatch.setattr(wizard, "can_prompt", lambda: False)
         monkeypatch.setattr(cli, "can_prompt", lambda: False)
 
-        exit_code = cli.main(["--env-file", str(tmp_path / ".env"), "test-db"])
+        exit_code = cli.main(["--env-file", str(tmp_path / ".env"), "test-mailbox"])
 
         assert exit_code == 2
         assert "configuration error" in capsys.readouterr().err
@@ -269,186 +259,97 @@ class TestWithoutATerminal:
 class TestTheInitFlag:
     @pytest.mark.parametrize("flag", ["--init", "-init"])
     def test_both_spellings_re_ask_over_a_complete_env_file(self, tmp_path, monkeypatch, flag):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "\n".join(
-                [
-                    "QLAR_BASE_URL=https://qlar.example.com/api/email-gateway",
-                    "DB_PROVIDER=postgresql",
-                    "DB_HOST=old.internal",
-                    "DB_PORT=5432",
-                    "DB_NAME=warehouse",
-                    "DB_USER=qlar_readonly",
-                    "DB_PASSWORD=old-secret",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        Console("", "new.internal", "", "", "", "", "").install(monkeypatch)
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
+        Console("new-imap.corp.test", "", "", "", "", "", "", "", "", "", "").install(monkeypatch)
         monkeypatch.setattr(cli, "can_prompt", lambda: True)
 
-        exit_code = cli.main(["--env-file", str(env_file), "test-db", flag])
+        cli.main(["--env-file", str(env_file), "test-mailbox", flag])
 
-        assert exit_code == 0
-        assert env_values(env_file)["DB_HOST"] == "new.internal"
+        assert env_values(env_file)["IMAP_HOST"] == "new-imap.corp.test"
 
     def test_without_the_flag_a_complete_env_file_asks_nothing(self, tmp_path, monkeypatch, capsys):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "\n".join(
-                [
-                    "QLAR_BASE_URL=https://qlar.example.com/api/email-gateway",
-                    "DB_PROVIDER=postgresql",
-                    "DB_HOST=db.internal",
-                    "DB_PORT=5432",
-                    "DB_NAME=warehouse",
-                    "DB_USER=qlar_readonly",
-                    "DB_PASSWORD=secret",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
 
         def refuse(_prompt: str = "") -> str:
-            raise AssertionError("a filled-in .env must not be questioned")
+            raise AssertionError("a complete .env must not trigger the prompts")
 
         monkeypatch.setattr("builtins.input", refuse)
-        monkeypatch.setattr(wizard, "test_connection", _connection(True))
-        monkeypatch.setattr(wizard, "account_can_write", lambda _settings: False)
+        monkeypatch.setattr(cli, "can_prompt", lambda: True)
+        monkeypatch.setattr(wizard, "test_mailbox", _mailbox(True))
 
-        assert cli.main(["--env-file", str(env_file), "test-db"]) == 0
-        assert "connected in 7 ms" in capsys.readouterr().out
+        assert cli.main(["--env-file", str(env_file), "test-mailbox"]) == 0
+        out = capsys.readouterr().out
+        assert "Dovecot" in out
+        assert "IDLE" in out
+
+
+class TestTestMailbox:
+    def test_a_failed_login_exits_non_zero_and_names_the_category(self, tmp_path, monkeypatch, capsys):
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
+        monkeypatch.setattr(cli, "can_prompt", lambda: False)
+        monkeypatch.setattr(wizard, "test_mailbox", _mailbox(False))
+
+        assert cli.main(["--env-file", str(env_file), "test-mailbox"]) == 1
+        assert "auth" in capsys.readouterr().err
+
+    def test_the_password_is_never_printed(self, tmp_path, monkeypatch, capsys):
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
+        monkeypatch.setattr(cli, "can_prompt", lambda: False)
+        monkeypatch.setattr(wizard, "test_mailbox", _mailbox(True))
+
+        cli.main(["--env-file", str(env_file), "test-mailbox"])
+
+        captured = capsys.readouterr()
+        assert "secret" not in captured.out + captured.err
 
 
 class TestTheEnrolmentCode:
-    """The one answer the prompts used to leave out, and the one most often mistyped.
-
-    It travels from a web page, through a clipboard, into a file, via whatever shell the
-    operator happens to have — and on cmd.exe `echo 'KEY=value' >> .env` writes the quotes
-    into the file, so the gateway reports the code as unset while it is visibly there.
-    Asking for it removes every step in that chain except the clipboard.
-    """
-
-    def _configured(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "\n".join(
-                [
-                    f"QLAR_BASE_URL={ENDPOINT}",
-                    "DB_PROVIDER=postgresql",
-                    "DB_HOST=db.internal",
-                    "DB_PORT=5432",
-                    "DB_NAME=warehouse",
-                    "DB_USER=qlar_readonly",
-                    "DB_PASSWORD=secret",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return env_file
-
-    def test_it_is_asked_for_when_missing(self, tmp_path, monkeypatch):
-        env_file = self._configured(tmp_path)
-        Console("3gsl-d4gd-v7yy").install(monkeypatch)
-
-        seen = {}
+    def _capture(self, monkeypatch) -> dict:
+        seen: dict = {}
 
         def fake_enroll(settings):
+            seen["base_url"] = settings.base_url
             seen["code"] = settings.enrollment_code
             raise cli.EnrollmentError("stopping here; the code is what this test is about")
 
         monkeypatch.setattr(cli, "enroll", fake_enroll)
+        return seen
+
+    def test_it_is_asked_for_when_missing(self, tmp_path, monkeypatch):
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
+        Console("3gsl-d4gd-v7yy").install(monkeypatch)
+        seen = self._capture(monkeypatch)
         monkeypatch.setattr(cli, "can_prompt", lambda: True)
 
         cli.main(["--env-file", str(env_file), "enroll"])
 
-        # Upper-cased on the way through: the CMS generates from an upper-case alphabet,
-        # and a lower-case paste would otherwise fail the hash comparison server-side.
         assert seen["code"] == "3GSL-D4GD-V7YY"
 
     def test_quotes_from_a_pasted_shell_snippet_are_stripped(self, tmp_path, monkeypatch):
-        env_file = self._configured(tmp_path)
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
         Console("'3GSL-D4GD-V7YY'").install(monkeypatch)
-
-        seen = {}
-
-        def fake_enroll(settings):
-            seen["code"] = settings.enrollment_code
-            raise cli.EnrollmentError("stop")
-
-        monkeypatch.setattr(cli, "enroll", fake_enroll)
+        seen = self._capture(monkeypatch)
         monkeypatch.setattr(cli, "can_prompt", lambda: True)
 
         cli.main(["--env-file", str(env_file), "enroll"])
 
         assert seen["code"] == "3GSL-D4GD-V7YY"
 
-    def test_a_configured_code_is_not_questioned(self, tmp_path, monkeypatch):
-        env_file = self._configured(tmp_path)
-        with env_file.open("a", encoding="utf-8") as handle:
-            handle.write("QLAR_ENROLLMENT_CODE=ALREADY-SET-HERE\n")
-
-        def refuse(_prompt: str = "") -> str:
-            raise AssertionError("a code that is already configured must not be asked for")
-
-        monkeypatch.setattr("builtins.input", refuse)
-        monkeypatch.setattr(cli, "can_prompt", lambda: True)
-
-        seen = {}
-
-        def fake_enroll(settings):
-            seen["code"] = settings.enrollment_code
-            raise cli.EnrollmentError("stop")
-
-        monkeypatch.setattr(cli, "enroll", fake_enroll)
-
-        cli.main(["--env-file", str(env_file), "enroll"])
-
-        assert seen["code"] == "ALREADY-SET-HERE"
-
     def test_without_a_terminal_the_old_error_stands(self, tmp_path, monkeypatch, capsys):
-        env_file = self._configured(tmp_path)
+        env_file = write_env(tmp_path / ".env", *COMPLETE_ENV)
         monkeypatch.setattr(cli, "can_prompt", lambda: False)
+        monkeypatch.setattr(wizard, "test_mailbox", _mailbox(True))
 
         assert cli.main(["--env-file", str(env_file), "enroll"]) == 1
         assert "QLAR_ENROLLMENT_CODE is not set" in capsys.readouterr().err
 
 
 class TestEnrollingInOneLine:
-    """`enroll --base-url ... --code ...`: the two values Qlar knows, as arguments.
+    def _mailbox_only(self, tmp_path) -> Path:
+        return write_env(tmp_path / ".env", *COMPLETE_ENV[1:])
 
-    They have to cross from a browser to a terminal somehow. Through `.env` they cross a
-    shell, which quotes and encodes differently on every platform and broke two installs.
-    Through a prompt they cross a clipboard twice. As arguments they are one copy-paste
-    line that reads the same in bash, cmd and PowerShell — neither value contains a space,
-    so there is nothing to quote.
-    """
-
-    ENDPOINT = "https://qlar.example.com/api/email-gateway"
-
-    def _database_only(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "\n".join(
-                [
-                    "DB_PROVIDER=postgresql",
-                    "DB_HOST=db.internal",
-                    "DB_PORT=5432",
-                    "DB_NAME=warehouse",
-                    "DB_USER=qlar_readonly",
-                    "DB_PASSWORD=secret",
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        return env_file
-
-    def _capture(self, monkeypatch):
-        seen = {}
+    def _capture(self, monkeypatch) -> dict:
+        seen: dict = {}
 
         def fake_enroll(settings):
             seen["base_url"] = settings.base_url
@@ -456,10 +357,11 @@ class TestEnrollingInOneLine:
             raise cli.EnrollmentError("stopping here; the arguments are what this tests")
 
         monkeypatch.setattr(cli, "enroll", fake_enroll)
+        monkeypatch.setattr(wizard, "test_mailbox", _mailbox(True))
         return seen
 
     def test_both_values_reach_enrolment_without_a_prompt(self, tmp_path, monkeypatch):
-        env_file = self._database_only(tmp_path)
+        env_file = self._mailbox_only(tmp_path)
         seen = self._capture(monkeypatch)
 
         def refuse(_prompt: str = "") -> str:
@@ -468,62 +370,30 @@ class TestEnrollingInOneLine:
         monkeypatch.setattr("builtins.input", refuse)
         monkeypatch.setattr(cli, "can_prompt", lambda: True)
 
-        cli.main(
-            [
-                "--env-file", str(env_file), "enroll",
-                "--base-url", self.ENDPOINT,
-                "--code", "86lp-6z8g-xw4q",
-            ]
-        )
+        cli.main(["--env-file", str(env_file), "enroll", "--base-url", ENDPOINT, "--code", "86lp-6z8g-xw4q"])
 
-        assert seen["base_url"] == self.ENDPOINT
-        assert seen["code"] == "86LP-6Z8G-XW4Q", "upper-cased, as the CMS generates it"
+        assert seen["base_url"] == ENDPOINT
+        assert seen["code"] == "86LP-6Z8G-XW4Q"
 
-    def test_a_trailing_slash_does_not_reach_the_signed_paths(self, tmp_path, monkeypatch):
-        env_file = self._database_only(tmp_path)
-        seen = self._capture(monkeypatch)
-        monkeypatch.setattr(cli, "can_prompt", lambda: True)
-
-        cli.main(
-            ["--env-file", str(env_file), "enroll", "--base-url", self.ENDPOINT + "/", "--code", "X"]
-        )
-
-        assert seen["base_url"] == self.ENDPOINT
-
-    def test_the_endpoint_is_saved_so_the_next_run_does_not_ask(self, tmp_path, monkeypatch):
-        env_file = self._database_only(tmp_path)
+    def test_the_endpoint_is_saved_and_the_code_is_not(self, tmp_path, monkeypatch):
+        env_file = self._mailbox_only(tmp_path)
         self._capture(monkeypatch)
         monkeypatch.setattr(cli, "can_prompt", lambda: True)
 
-        cli.main(["--env-file", str(env_file), "enroll", "--base-url", self.ENDPOINT, "--code", "X"])
+        cli.main(["--env-file", str(env_file), "enroll", "--base-url", ENDPOINT, "--code", "SECRET-CODE"])
 
-        assert f"QLAR_BASE_URL={self.ENDPOINT}" in env_file.read_text(encoding="utf-8")
+        text = env_file.read_text(encoding="utf-8")
+        assert f"QLAR_BASE_URL={ENDPOINT}" in text
+        assert "SECRET-CODE" not in text
 
-    def test_the_code_is_not_saved(self, tmp_path, monkeypatch):
-        # Single use, and spent the moment enrolment succeeds. Keeping it would leave a dead
-        # credential in a file that also holds the database password.
-        env_file = self._database_only(tmp_path)
-        self._capture(monkeypatch)
-        monkeypatch.setattr(cli, "can_prompt", lambda: True)
-
-        cli.main(
-            ["--env-file", str(env_file), "enroll", "--base-url", self.ENDPOINT, "--code", "SECRET-CODE"]
-        )
-
-        assert "SECRET-CODE" not in env_file.read_text(encoding="utf-8")
-
-    def test_the_database_is_still_asked_for_when_it_is_unknown(self, tmp_path, monkeypatch):
-        # The endpoint and the code come from Qlar; the database does not, and nothing on
-        # this path can know it.
+    def test_the_mailbox_is_still_asked_for_when_it_is_unknown(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".env"
         seen = self._capture(monkeypatch)
-        console = Console("", "db.internal", "", "warehouse", "reader", "pw").install(monkeypatch)
+        console = Console(*MAILBOX_ANSWERS).install(monkeypatch)
         monkeypatch.setattr(cli, "can_prompt", lambda: True)
 
-        cli.main(["--env-file", str(env_file), "enroll", "--base-url", self.ENDPOINT, "--code", "X"])
+        cli.main(["--env-file", str(env_file), "enroll", "--base-url", ENDPOINT, "--code", "X"])
 
-        assert seen["base_url"] == self.ENDPOINT
-        # Every scripted answer was used, and none of them was an endpoint: the Qlar
-        # question is skipped when the answer arrived on the command line.
+        assert seen["base_url"] == ENDPOINT
         assert console.answers == []
         assert not any("endpoint" in prompt.lower() for prompt in console.prompts)

@@ -94,17 +94,20 @@ def _assert_private_key_permissions(path: Path) -> None:
     mode = path.stat().st_mode
     if mode & (stat.S_IRWXG | stat.S_IRWXO):
         raise KeyFilePermissionError(
-            f"{path} is accessible to group/other (mode {oct(mode & 0o777)}). "
-            f"Run: chmod 600 {path}"
+            f"{path} is accessible to group/other (mode {oct(mode & 0o777)}). Run: chmod 600 {path}"
         )
 
 
 def public_key_pem(private_key: EllipticCurvePrivateKey) -> str:
     """Returns the PEM-encoded public key to register with Qlar."""
-    return private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
+    return (
+        private_key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("ascii")
+    )
 
 
 def load_public_key(pem: str) -> EllipticCurvePublicKey:

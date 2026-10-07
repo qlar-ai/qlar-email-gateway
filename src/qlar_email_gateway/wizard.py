@@ -1,19 +1,19 @@
-"""First-run setup: ask for the database details, write them to `.env`, prove they work.
+"""First-run setup: ask for the mailbox details, write them to `.env`, prove they work.
 
 Installing the gateway and starting it should be the whole job. Copying `.env.example`,
-remembering which variable names the loader expects, and discovering a typo hours later
-when the first query fails is work that a handful of prompts can do instead.
+remembering which variable names the loader expects, and discovering a typo hours later when the
+first reply fails to send is work that a handful of prompts can do instead.
 
-So a start with no usable configuration asks, writes the answers to `.env`, and runs one
-query against the database before going any further. The answers are written to the file
-precisely so that this happens exactly once: the next start — a restart, a systemd unit, a
-replaced container — reads the file and never asks again. `--init` asks anyway, for the
-day the password rotates or the database moves.
+So a start with no usable configuration asks, writes the answers to `.env`, and logs in to IMAP
+and SMTP once before going any further. The answers are written to the file precisely so that
+this happens exactly once: the next start — a restart, a systemd unit, a replaced container —
+reads the file and never asks again. `--init` asks anyway, for the day the password rotates or
+the mail server moves.
 
-None of this is mandatory. A `.env` written by hand, or environment variables set by a
-container, still take precedence and the prompts never appear; and without a terminal to
-ask on, the old configuration error is printed exactly as before. The prompts are a
-convenience for a human at a console, never a new requirement for automation.
+None of this is mandatory. A `.env` written by hand, or environment variables set by a container,
+still take precedence and the prompts never appear; and without a terminal to ask on, the
+configuration error is printed as before. The prompts are a convenience for a human at a console,
+never a new requirement for automation.
 """
 
 from __future__ import annotations
@@ -21,11 +21,10 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
 
 from . import console
 from .config import (
-    SUPPORTED_PROVIDERS,
+    SECURITY_MODES,
     ConfigError,
     Settings,
     load_dotenv,
@@ -35,27 +34,29 @@ from .config import (
     unwrap_quoted_line,
     write_env_values,
 )
-from .executor import account_can_write, test_connection
+from .mailbox import MailboxError, test_mailbox
 from .masked_input import prompt_for_secret
-from .providers import default_port
+from .sender import SmtpSendError
 
-# No default. The endpoint differs per Qlar deployment, the CMS gateway panel prints the
-# right one, and a plausible-looking guess is worse than a question: it fails at enrolment
-# with a 404 that reads like a rejected code.
-BASE_URL_HINT = "ends in /api/email-gateway - the CMS gateway panel shows it"
+# No default. The endpoint differs per Qlar deployment, the CMS email panel prints the right one,
+# and a plausible-looking guess is worse than a question: it fails at enrolment with a 404 that
+# reads like a rejected code.
+BASE_URL_HINT = "ends in /api/email-gateway - the CMS email panel shows it"
 
-# Names people actually type, mapped to the four `DB_PROVIDER` values.
-PROVIDER_ALIASES = {
-    "postgres": "postgresql",
-    "postgre": "postgresql",
-    "pg": "postgresql",
-    "psql": "postgresql",
-    "mariadb": "mysql",
-    "mssql": "sqlserver",
-    "sqlsrv": "sqlserver",
-    "sql server": "sqlserver",
-    "ora": "oracle",
+DEFAULT_PORTS = {
+    ("imap", "ssl"): "993",
+    ("imap", "starttls"): "143",
+    ("smtp", "ssl"): "465",
+    ("smtp", "starttls"): "587",
 }
+
+__all__ = [
+    "SetupAborted",
+    "ask_enrollment_code",
+    "can_prompt",
+    "check_connection",
+    "run_setup",
+]
 
 
 class SetupAborted(Exception):
@@ -65,9 +66,9 @@ class SetupAborted(Exception):
 def can_prompt() -> bool:
     """True when there is a human at a console to answer.
 
-    A container started without a TTY, a systemd unit and a cron job all answer False here
-    and get the configuration error they have always got. Prompting into a log file that
-    nobody is reading would turn a clear failure into a process that appears to hang.
+    A container started without a TTY, a systemd unit and a cron job all answer False here and get
+    the configuration error they have always got. Prompting into a log file that nobody is reading
+    would turn a clear failure into a process that appears to hang.
     """
     try:
         return sys.stdin is not None and sys.stdin.isatty()
@@ -76,20 +77,16 @@ def can_prompt() -> bool:
 
 
 def run_setup(env_file: Path, *, ask_endpoint: bool = True, reason: str = "") -> tuple[Settings, bool]:
-    """Asks for the database details, saves them, and tests them.
+    """Asks for the mailbox details, saves them, and tests them.
 
-    Returns the settings and whether the test query succeeded. A failed test is not fatal:
-    the operator is told, offered another go, and — if they decline — left with a saved
-    `.env` they can fix by hand or with `--init`. Refusing to continue would be worse; a
-    database that is merely down at this moment is a normal thing for a service to survive.
+    Returns the settings and whether the login test succeeded. A failed test is not fatal: the
+    operator is told, offered another go, and — if they decline — left with a saved `.env` they
+    can fix by hand or with `--init`. A mail server that is merely down at this moment is a normal
+    thing for a service to survive.
     """
-    # Whatever is already configured becomes the default answer, so re-running `--init`
-    # to change one field is a row of Enter presses and one new value.
     try:
         load_dotenv(env_file)
     except ConfigError as error:
-        # An unreadable file has nothing to offer as defaults, but it is not a reason to
-        # refuse to set the gateway up - that is exactly what the operator is here for.
         print(f"Ignoring the existing file: {error}", file=sys.stderr)
 
     _banner(env_file, reason)
@@ -100,13 +97,13 @@ def run_setup(env_file: Path, *, ask_endpoint: bool = True, reason: str = "") ->
         if backup is not None:
             print(f"\nThe previous {env_file} could not be read; it is kept as {backup}.")
 
-        # The file is for the *next* start; this process is already past the point where
-        # it read the environment, so the answers go into it directly.
+        # The file is for the *next* start; this process is already past the point where it read
+        # the environment, so the answers go into it directly.
         os.environ.update(answers)
 
         try:
-            # Not `load_settings(env_file)`: the file has just been loaded, and real
-            # environment variables win there, which would hide the answers just given.
+            # Not `load_settings(env_file)`: real environment variables win there, which would
+            # hide the answers just given.
             settings = load_settings(None)
         except ConfigError as error:
             print(f"That configuration cannot be used: {error}", file=sys.stderr)
@@ -132,87 +129,84 @@ def run_setup(env_file: Path, *, ask_endpoint: bool = True, reason: str = "") ->
 def ask_enrollment_code() -> str:
     """Asks for the one-time code, rather than sending the operator back to edit a file.
 
-    This is the one answer the setup prompts used to leave out, and it is the one most
-    likely to be got wrong: it arrives by copy and paste from a web page, into a file, on a
-    machine whose shell may not quote the way the instructions assumed. A prompt has no
-    shell in it at all.
-
-    Not written to `.env`. The code is single-use and spent the moment enrolment succeeds,
-    so keeping it would leave a dead credential on disk and one more thing to explain.
+    Not written to `.env`. The code is single-use and spent the moment enrolment succeeds, so
+    keeping it would leave a dead credential on disk and one more thing to explain.
     """
     print()
     print("The one-time enrolment code is shown in the Qlar CMS:")
-    print("  your agent > Plugins > SQL Database Reader > Connect via gateway")
+    print("  your agent > Channels > Email")
     print("It expires 15 minutes after it is generated, and works once.")
 
     while True:
         answer = _ask("  Enrolment code")
-        # Forgiving about how it arrived: pasted with the quotes from a shell snippet, in
-        # lower case, or with stray spaces. The alphabet the CMS generates is upper case.
+        # Forgiving about how it arrived: pasted with the quotes from a shell snippet, in lower
+        # case, or with stray spaces. The alphabet the CMS generates is upper case.
         code = unquote_env_value(answer.strip()).strip().upper()
         if code:
             return code
 
 
 def check_connection(settings: Settings, *, prominent: bool = False) -> bool:
-    """Runs one query against the database and reports what happened, in words.
+    """Logs in to IMAP and SMTP once and reports what happened, in words.
 
     Used at every start, not only during setup: the most common support question about any
-    on-premise agent is "is it actually talking to my database?", and the honest place to
-    answer it is the first line of the log rather than the first failed query an hour later.
+    on-premise agent is "is it actually talking to my mail server?", and the honest place to answer
+    it is the first lines of the log rather than the first reply that never arrives.
     """
-    database = settings.database
-    port = database.port or default_port(database.provider)
-    address = f"{database.provider}://{database.user}@{database.host}:{port}/{database.database}"
+    mail = settings.mail
+    address = (
+        f"{mail.user}  imap {mail.imap_host}:{mail.imap_port} ({mail.imap_security})  "
+        f"smtp {mail.smtp_host}:{mail.smtp_port} ({mail.smtp_security})"
+    )
 
     if prominent:
-        console.separator("TESTING THE DATABASE CONNECTION")
+        console.separator("TESTING THE MAILBOX")
         print(f"  {address}")
         print()
 
-    # Run first, print second: a failure belongs entirely on stderr, and half a block on
-    # each stream interleaves into nonsense the moment anyone redirects one of them.
-    result = test_connection(database)
-
-    if result.status != "ok":
-        error = result.error or {}
-        lines = [str(error.get("messageText"))]
-        if error.get("hint"):
-            lines.append(f"hint: {error['hint']}")
-
+    # Run first, print second: a failure belongs entirely on stderr, and half a block on each
+    # stream interleaves into nonsense the moment anyone redirects one of them.
+    try:
+        report = test_mailbox(settings)
+    except (MailboxError, SmtpSendError) as error:
+        server = "SMTP" if isinstance(error, SmtpSendError) else "IMAP"
+        hint = _HINTS.get(error.category, "")
+        lines = [f"{server}: {error}"] + ([f"hint: {hint}"] if hint else [])
         if prominent:
-            console.badge("FAIL", "bad", str(error.get("category")), *lines, file=sys.stderr)
+            console.badge("FAIL", "bad", error.category, *lines, file=sys.stderr)
         else:
-            console.field("database", address, file=sys.stderr)
-            console.field("connection", f"FAILED ({error.get('category')})", file=sys.stderr)
+            console.field("mailbox", address, file=sys.stderr)
+            console.field("connection", f"FAILED ({error.category})", file=sys.stderr)
             for line in lines:
                 console.detail(line, file=sys.stderr)
         return False
 
-    version = _one_line(str((result.rows or [[""]])[0][0]))
+    idle = (
+        "IDLE supported"
+        if report.get("idleSupported")
+        else f"no IDLE - checking every {settings.poll_interval_seconds}s"
+    )
+    summary = [
+        f"IMAP: {_one_line(str(report.get('imapBanner') or ''))}",
+        f"SMTP: {_one_line(str(report.get('smtpBanner') or ''))}",
+        f"{idle}; {report.get('inboxCount', 0)} messages in {mail.imap_folder}",
+    ]
 
     if prominent:
-        console.badge(" OK ", "ok", f"connected in {result.duration_ms} ms", version)
+        console.badge(" OK ", "ok", "logged in to IMAP and SMTP", *summary)
     else:
-        console.field("database", address)
-        console.success("connection", f"OK in {result.duration_ms} ms")
-        console.field("server", version)
-
-    # Advisory, never fatal. An operator who deliberately granted more is not blocked, but
-    # nobody should discover months later that the "read-only" gateway could drop tables.
-    # Given its own block: following a success, a warning set in the same shape as the rest
-    # reads as more of the success.
-    if account_can_write(database) is True:
-        console.warning(
-            "This database account appears able to modify data",
-            "The gateway only ever issues read-only transactions, but a read-only account",
-            "is the guarantee that does not depend on our code being right.",
-            "",
-            "Create one with SELECT and nothing more, then point DB_USER at it:",
-            "  CREATE ROLE qlar_readonly LOGIN PASSWORD '...';",
-            "  GRANT SELECT ON ALL TABLES IN SCHEMA public TO qlar_readonly;",
-        )
+        console.field("mailbox", address)
+        console.success("connection", "OK")
+        for line in summary:
+            console.detail(line)
     return True
+
+
+_HINTS = {
+    "auth": "check MAIL_USER / MAIL_PASSWORD; Microsoft 365 and Google need an app password or SMTP AUTH",
+    "connection": "check the host, port and IMAP_SECURITY / SMTP_SECURITY, and that a firewall allows them",
+    "timeout": "the server did not answer; check the host and port, and any firewall in between",
+}
 
 
 def _banner(env_file: Path, reason: str = "") -> None:
@@ -254,9 +248,7 @@ def _describe_existing(env_file: Path) -> str:
         recognised = [
             line.partition("=")[0].strip()
             for raw in read_env_text(env_file).splitlines()
-            if (line := unwrap_quoted_line(raw.strip()))
-            and not line.startswith("#")
-            and "=" in line
+            if (line := unwrap_quoted_line(raw.strip())) and not line.startswith("#") and "=" in line
         ]
     except ConfigError as error:
         return f"unreadable - {error}"
@@ -267,58 +259,65 @@ def _describe_existing(env_file: Path) -> str:
 
 
 def _collect_answers(*, ask_endpoint: bool = True) -> dict[str, str]:
-    """The questions themselves, in the order someone reads them off a connection string.
+    """The questions themselves, in the order a mail provider's settings page lists them.
 
-    `ask_endpoint` is False when the endpoint arrived on the command line: asking for an
-    answer that was just supplied is how a tool teaches people to stop reading its prompts.
+    `ask_endpoint` is False when the endpoint arrived on the command line: asking for an answer
+    that was just supplied is how a tool teaches people to stop reading its prompts.
     """
-    total = 7 if ask_endpoint else 6
+    total = 11 if ask_endpoint else 10
+    number = iter(f"{index}/{total}" for index in range(1, total + 1))
 
-    console.heading(f"YOUR DATABASE       ({total} answers in all)")
-    print("    " + "   ".join(f"{index}) {name}" for index, name in enumerate(SUPPORTED_PROVIDERS, 1)))
+    console.heading(f"YOUR MAILBOX        ({total} answers in all)")
+    print("    Incoming mail (IMAP), then outgoing mail (SMTP). The password stays on this machine.")
     print()
 
-    provider = _ask_provider(_current("DB_PROVIDER").lower() or SUPPORTED_PROVIDERS[0], f"1/{total}")
+    imap_host = _ask("IMAP host", _current("IMAP_HOST") or None, next(number))
+    imap_security_default = _current("IMAP_SECURITY").lower() or "ssl"
+    imap_port_default = _current("IMAP_PORT") or DEFAULT_PORTS[("imap", imap_security_default)]
+    imap_port = _ask_port("IMAP port", imap_port_default, next(number))
+    imap_security = _ask_security("IMAP security", imap_security_default, next(number))
 
-    # Nobody keeps the five parts of a connection separate in their head; they have a URL
-    # from their DBA. Accept it whole and use its parts as the defaults below, still shown
-    # one by one so that what was understood is visible before anything is saved.
-    host_answer = _ask("Host or URL", _current("DB_HOST") or None, f"2/{total}")
-    pasted = _parse_connection_url(host_answer)
-    host = pasted.get("host") or host_answer
+    smtp_host = _ask("SMTP host", _current("SMTP_HOST") or _guess_smtp_host(imap_host), next(number))
+    smtp_security_default = _current("SMTP_SECURITY").lower() or "starttls"
+    smtp_port_default = _current("SMTP_PORT") or DEFAULT_PORTS[("smtp", smtp_security_default)]
+    smtp_port = _ask_port("SMTP port", smtp_port_default, next(number))
+    smtp_security = _ask_security("SMTP security", smtp_security_default, next(number))
 
-    port = _ask_port(
-        pasted.get("port") or _current("DB_PORT") or str(default_port(provider) or ""), f"3/{total}"
+    user = _ask("Mailbox user", _current("MAIL_USER") or None, next(number))
+    saved_password = _current("MAIL_PASSWORD", strip=False)
+    password = _ask_secret(
+        "Password", keep_label="unchanged" if saved_password else None, number=next(number)
     )
-    database = _ask("Database name", pasted.get("database") or _current("DB_NAME") or None, f"4/{total}")
-    user = _ask("Username", pasted.get("user") or _current("DB_USER") or None, f"5/{total}")
+    password = password or saved_password
 
-    url_password = pasted.get("password")
-    saved_password = _current("DB_PASSWORD", strip=False)
-    keep_label = "from the URL" if url_password else ("unchanged" if saved_password else None)
-    password = _ask_secret("Password", keep_label=keep_label, number=f"6/{total}") or (
-        url_password or saved_password
-    )
+    address = _ask("Mail address", _current("MAIL_ADDRESS") or user, next(number))
+    from_name = _ask_optional("Sender name", _current("MAIL_FROM_NAME"), next(number))
 
     if ask_endpoint:
-        # No paragraph explaining what this is: the endpoint reaches almost everyone as
-        # `enroll --base-url ...`, straight from the CMS panel, and whoever lands here
-        # instead is reading the same panel.
         print()
         console.heading("QLAR")
-        base_url = _ask("API endpoint", _current("QLAR_BASE_URL") or None, f"7/{total}").rstrip("/")
+        base_url = _ask("API endpoint", _current("QLAR_BASE_URL") or None, next(number)).rstrip("/")
     else:
         base_url = _current("QLAR_BASE_URL").rstrip("/")
 
     return {
         "QLAR_BASE_URL": base_url,
-        "DB_PROVIDER": provider,
-        "DB_HOST": host,
-        "DB_PORT": port,
-        "DB_NAME": database,
-        "DB_USER": user,
-        "DB_PASSWORD": password,
+        "IMAP_HOST": imap_host,
+        "IMAP_PORT": imap_port,
+        "IMAP_SECURITY": imap_security,
+        "SMTP_HOST": smtp_host,
+        "SMTP_PORT": smtp_port,
+        "SMTP_SECURITY": smtp_security,
+        "MAIL_USER": user,
+        "MAIL_PASSWORD": password,
+        "MAIL_ADDRESS": address,
+        "MAIL_FROM_NAME": from_name,
     }
+
+
+def _guess_smtp_host(imap_host: str) -> str:
+    """`imap.corp.test` -> `smtp.corp.test`; anything else is offered unchanged (one server)."""
+    return "smtp." + imap_host[len("imap.") :] if imap_host.lower().startswith("imap.") else imap_host
 
 
 def _current(name: str, *, strip: bool = True) -> str:
@@ -389,24 +388,30 @@ def _ask_secret(label: str, *, keep_label: str | None, number: str = "") -> str 
         _complain("a password is required (the gateway does not support passwordless login)")
 
 
-def _ask_provider(default: str, number: str = "") -> str:
-    while True:
-        answer = _ask("Database type", default, number).strip().lower()
-        if answer in SUPPORTED_PROVIDERS:
-            return answer
-        if answer in PROVIDER_ALIASES:
-            return PROVIDER_ALIASES[answer]
-        if answer.isdigit() and 1 <= int(answer) <= len(SUPPORTED_PROVIDERS):
-            return SUPPORTED_PROVIDERS[int(answer) - 1]
-        _complain(f"choose a number, or one of: {', '.join(SUPPORTED_PROVIDERS)}")
+def _ask_optional(label: str, default: str, number: str = "") -> str:
+    """Like `_ask`, but Enter with nothing saved means "leave it blank"."""
+    try:
+        answer = input(_prompt(label, default or None, number)).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise SetupAborted("cancelled at the prompt") from None
+    return answer or default
 
 
-def _ask_port(default: str, number: str = "") -> str:
+def _ask_port(label: str, default: str, number: str = "") -> str:
     while True:
-        answer = _ask("Port", default or None, number)
+        answer = _ask(label, default or None, number)
         if answer.isdigit() and 1 <= int(answer) <= 65535:
             return answer
         _complain("a port is a whole number between 1 and 65535")
+
+
+def _ask_security(label: str, default: str, number: str = "") -> str:
+    while True:
+        answer = _ask(label, default, number).strip().lower()
+        if answer in SECURITY_MODES:
+            return answer
+        _complain("ssl or starttls")
 
 
 def _ask_yes_no(question: str, *, default: bool) -> bool:
@@ -423,49 +428,6 @@ def _ask_yes_no(question: str, *, default: bool) -> bool:
             return True
         if answer in {"n", "no"}:
             return False
-
-
-def _parse_connection_url(answer: str) -> dict[str, str]:
-    """Pulls host, port, database, user and password out of a pasted connection string.
-
-    Understands `postgresql://user:pass@host:5432/db`, the `jdbc:` prefixed form of the
-    same, and a bare `host:port`. Anything it does not recognise comes back empty, and the
-    answer is then treated as a plain hostname — which is what it almost always is.
-    """
-    text = answer.strip()
-    if not text:
-        return {}
-
-    if text.lower().startswith("jdbc:"):
-        text = text[len("jdbc:") :]
-
-    if "://" not in text:
-        host, separator, port = text.partition(":")
-        if separator and port.strip().isdigit():
-            return {"host": host.strip(), "port": port.strip()}
-        return {}
-
-    try:
-        parsed = urlsplit(text)
-    except ValueError:
-        return {}
-
-    parts: dict[str, str] = {}
-    if parsed.hostname:
-        parts["host"] = parsed.hostname
-    try:
-        if parsed.port:
-            parts["port"] = str(parsed.port)
-    except ValueError:  # a non-numeric port in the pasted text
-        pass
-    database = parsed.path.lstrip("/").split("?", 1)[0]
-    if database:
-        parts["database"] = unquote(database)
-    if parsed.username:
-        parts["user"] = unquote(parsed.username)
-    if parsed.password:
-        parts["password"] = unquote(parsed.password)
-    return parts
 
 
 def _one_line(text: str, limit: int = 100) -> str:

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from qlar_email_gateway.client import QlarRejected
-from qlar_email_gateway.config import DatabaseSettings, EnrollmentState, Settings
+from qlar_email_gateway.config import EnrollmentState, MailSettings, Settings
 from qlar_email_gateway.poll import (
     APPROVAL_POLL_SECONDS,
     MAX_BACKOFF_SECONDS,
@@ -41,15 +41,13 @@ def _settings(tmp_path: Path) -> Settings:
         state_file=tmp_path / "gateway-state.json",
         audit_log_file=None,
         poll_timeout_seconds=25,
-        max_concurrent_queries=1,
         verify_tls=True,
-        database=DatabaseSettings(
-            provider="postgresql",
-            host="localhost",
-            port=5432,
-            database="test",
-            user="reader",
+        mail=MailSettings(
+            imap_host="imap.test",
+            smtp_host="smtp.test",
+            user="ask@corp.test",
             password="secret",
+            address="ask@corp.test",
         ),
     )
 
