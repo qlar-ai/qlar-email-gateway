@@ -55,15 +55,33 @@ class TestRequestSignature:
         assert crypto.verify(key.public_key(), message, "") is False
 
 
+EMPTY_HASH = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+
+
+def _fixture_job() -> dict:
+    """The worked example from PROTOCOL.md §2, shared with Qlar's C# tests."""
+    return {
+        "jobId": "job_1",
+        "type": "send_email",
+        "protocol": 1,
+        "to": ["Budi@Example.com"],
+        "subject": "Re: Harga paket",
+        "inReplyTo": "<m1@example.com>",
+        "references": ["<root@example.com>", "<m1@example.com>"],
+        "textBody": "Halo Budi",
+        "htmlBody": "<p>Halo Budi</p>",
+        "issuedAt": "2026-10-07T08:00:00Z",
+        "expiresAt": "2026-10-07T08:10:00Z",
+        "agentId": "agt_1",
+        "userId": "budi@example.com",
+        "conversationId": "root@example.com",
+        "signature": "ignored",
+    }
+
+
 class TestJobSignature:
     def _signed_job(self, key) -> dict:
-        job = {
-            "jobId": "job-1",
-            "type": "execute_query",
-            "sql": "SELECT 1",
-            "maxRows": 100,
-            "protocol": 1,
-        }
+        job = _fixture_job()
         job["signature"] = crypto.sign(key, crypto.canonical_job_bytes(job))
         return job
 
@@ -71,18 +89,18 @@ class TestJobSignature:
         public_pem = crypto.public_key_pem(key)
         assert crypto.verify_job(public_pem, self._signed_job(key)) is True
 
-    def test_altered_sql_fails(self, key):
+    def test_altered_recipient_fails(self, key):
         public_pem = crypto.public_key_pem(key)
         job = self._signed_job(key)
         # The attack this defends against: a proxy inside the customer's network that
-        # terminates TLS and rewrites the statement on its way in.
-        job["sql"] = "SELECT * FROM salaries"
+        # terminates TLS and redirects the reply to someone else.
+        job["to"] = ["attacker@evil.example"]
         assert crypto.verify_job(public_pem, job) is False
 
-    def test_added_field_fails(self, key):
+    def test_altered_body_fails(self, key):
         public_pem = crypto.public_key_pem(key)
         job = self._signed_job(key)
-        job["maxRows"] = 999999
+        job["textBody"] = "Please wire the money to ..."
         assert crypto.verify_job(public_pem, job) is False
 
     def test_missing_signature_fails(self, key):
@@ -92,39 +110,58 @@ class TestJobSignature:
         assert crypto.verify_job(public_pem, job) is False
 
     def test_key_order_and_unsigned_extras_do_not_matter(self, key):
-        # The canonical form is a fixed field list, so neither the order the JSON arrived in
-        # nor a field outside that list can change the signature. Both matter: the first
-        # means no JSON library change can break every deployed gateway, the second means
-        # Qlar can add a purely informational field without a protocol bump.
         public_pem = crypto.public_key_pem(key)
         job = self._signed_job(key)
 
         reordered = json.loads(json.dumps(dict(reversed(list(job.items())))))
         assert crypto.verify_job(public_pem, reordered) is True
 
-        reordered["loadingText"] = "Reading the database..."
+        reordered["note"] = "informational only"
         assert crypto.verify_job(public_pem, reordered) is True
 
     def test_canonical_form_matches_the_documented_field_list(self):
-        # Pinned against the exact bytes Qlar's C# builds. If either side changes its field
-        # order or its rendering, this fails here rather than in a customer's network.
+        # Pinned against the exact bytes Qlar's C# builds (Messenger-BE CanonicalBytesTest).
+        assert crypto.canonical_job_bytes(_fixture_job()) == (
+            b"job_1\nsend_email\n1\nbudi@example.com\nRe: Harga paket\n<m1@example.com>\n"
+            b"<root@example.com>,<m1@example.com>\n"
+            b"vR+7278oCiP11GZx5vF5k1UCifUxfyC4bS7kmMoP7wI=\nTla78pZSiLIcYnzFn0/c4Z+dC/yOiazDVjBrFnI5/VA=\n"
+            b"2026-10-07T08:00:00Z\n2026-10-07T08:10:00Z\nagt_1\nbudi@example.com\nroot@example.com"
+        )
+
+    def test_test_connection_job_hashes_empty_bodies(self):
         job = {
-            "jobId": "job_1",
-            "type": "execute_query",
+            "jobId": "job_2",
+            "type": "test_connection",
             "protocol": 1,
-            "sql": "SELECT 1",
-            "maxRows": 1000,
-            "issuedAt": "2026-09-19T08:14:02Z",
-            "expiresAt": "2026-09-19T08:15:02Z",
-            "agentId": "agt_1",
-            "userId": None,
-            "conversationId": None,
-            "signature": "ignored",
+            "issuedAt": "2026-10-07T08:00:00Z",
+            "expiresAt": "2026-10-07T08:00:45Z",
+            "to": None,
+            "references": [],
         }
         assert crypto.canonical_job_bytes(job) == (
-            b"job_1\nexecute_query\n1\nSELECT 1\n1000\n"
-            b"2026-09-19T08:14:02Z\n2026-09-19T08:15:02Z\nagt_1\n\n"
+            b"job_2\ntest_connection\n1\n\n\n\n\n" + EMPTY_HASH.encode() + b"\n" + EMPTY_HASH.encode()
+            + b"\n2026-10-07T08:00:00Z\n2026-10-07T08:00:45Z\n\n\n"
         )
+
+    def test_request_signature_matches_dotnet_vector(self):
+        body = b'{"messageId":"<m1@example.com>"}'
+        assert crypto.canonical_request("POST", "/inbound", "1791360000", "n0nce-fixture", body) == (
+            b"POST\n/inbound\n1791360000\nn0nce-fixture\n" + crypto.body_hash(body).encode()
+        )
+
+    def test_job_signed_by_python_vector_verifies(self):
+        # The same throwaway key and signature Messenger-BE's PythonInteropTest verifies in .NET.
+        public_pem = (
+            "-----BEGIN PUBLIC KEY-----\n"
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEndutb0pQEiURWe3HU3jJ4FTU3NaZ\n"
+            "e/a76BY9jT7s1E/4NwMSFqU3OXqP7Cs4v0MlvJCi+dUJWQkFJjwmeraRDA==\n"
+            "-----END PUBLIC KEY-----\n"
+        )
+        job = _fixture_job()
+        job["signature"] = (
+            "MEYCIQCa95Ymf3Abrt4zjbCiAfX2sEma1TH05JuzU5uXLm0vPgIhAMEkk0jFryasYtR1OGXUPO9+9ew8Khle1PVfeSeBxn4/"
+        )
+        assert crypto.verify_job(public_pem, job) is True
 
 
 class TestFingerprint:

@@ -167,44 +167,53 @@ def verify(public_key: EllipticCurvePublicKey, message: bytes, signature_b64: st
     return True
 
 
-#: The job fields the signature covers, in the exact order they are joined. Everything that
-#: changes what the gateway will DO is here; adding such a field is a protocol change.
-SIGNED_JOB_FIELDS = (
-    "jobId",
-    "type",
-    "protocol",
-    "sql",
-    "maxRows",
-    "issuedAt",
-    "expiresAt",
-    "agentId",
-    "userId",
-    "conversationId",
-)
+def _text(value: Any) -> str:
+    """A scalar as it contributes to the canonical form: null is empty, numbers as integers."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):  # not expected, but must never render as True/False
+        return "1" if value else "0"
+    return str(value)
+
+
+def _list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [_text(item) for item in value]
 
 
 def canonical_job_bytes(job: dict[str, Any]) -> bytes:
-    """Canonical form of a job for signature verification.
+    """Canonical form of a job for signature verification (PROTOCOL.md §2, "Signing a job").
 
-    Named fields in a fixed order joined by newlines — deliberately NOT canonical JSON.
-    Two runtimes agreeing on "sorted keys, tight separators, no ASCII escaping" sounds
-    simple right up until a non-ASCII column name, a `/`, or a float turns up and one
-    serializer escapes it differently from the other. Every job would then fail
-    verification inside a customer's network, with nothing in the logs explaining why. A
-    field list has no such ambiguity.
+    Named fields in a fixed order joined by newlines — deliberately NOT canonical JSON. Two
+    runtimes agreeing on "sorted keys, tight separators, no ASCII escaping" sounds simple right
+    up until a non-ASCII subject or a `/` turns up and one serializer escapes it differently
+    from the other. Every job would then fail verification inside a customer's network, with
+    nothing in the logs explaining why. A field list has no such ambiguity.
 
-    Values are used exactly as they arrived on the wire: an absent or null field
-    contributes an empty string, and numbers are rendered as their JSON integer form.
+    ``to`` is lowercased and joined by ``,``; ``references`` is joined by ``,`` as given; the
+    two bodies contribute base64(SHA-256) so no newline inside them can shift a field. Everything
+    that changes what the gateway will DO is in this list; adding such a field is a protocol
+    change.
     """
-    parts: list[str] = []
-    for field in SIGNED_JOB_FIELDS:
-        value = job.get(field)
-        if value is None:
-            parts.append("")
-        elif isinstance(value, bool):  # not expected, but must never render as True/False
-            parts.append("1" if value else "0")
-        else:
-            parts.append(str(value))
+    parts = [
+        _text(job.get("jobId")),
+        _text(job.get("type")),
+        _text(job.get("protocol")),
+        ",".join(address.lower() for address in _list(job.get("to"))),
+        _text(job.get("subject")),
+        _text(job.get("inReplyTo")),
+        ",".join(_list(job.get("references"))),
+        body_hash(_text(job.get("textBody")).encode("utf-8")),
+        body_hash(_text(job.get("htmlBody")).encode("utf-8")),
+        _text(job.get("issuedAt")),
+        _text(job.get("expiresAt")),
+        _text(job.get("agentId")),
+        _text(job.get("userId")),
+        _text(job.get("conversationId")),
+    ]
 
     return "\n".join(parts).encode("utf-8")
 
