@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qlar-email-gateway"
+dynamic = ["version"]
+description = "On-premise email gateway for Qlar — IMAP in, SMTP out, outbound-only, no inbound ports."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Pusaka AI" }]
+keywords = ["qlar", "email", "imap", "smtp", "on-premise", "gateway"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Email",
+]
+
+# Kept deliberately small: this process runs inside someone else's network, and every
+# dependency is something their security team has to accept. beautifulsoup4 (MIT) turns HTML
+# mail into text; html2text was rejected because it is GPL-3.
+dependencies = [
+    "cryptography>=42.0",
+    "httpx>=0.27",
+    "imapclient>=3.0",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6"]
+
+[project.scripts]
+qlar-email-gateway = "qlar_email_gateway.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/qlar-ai/qlar-email-gateway"
+Documentation = "https://github.com/qlar-ai/qlar-email-gateway/tree/main/docs"
+Changelog = "https://github.com/qlar-ai/qlar-email-gateway/blob/main/CHANGELOG.md"
+Issues = "https://github.com/qlar-ai/qlar-email-gateway/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "qlar_email_gateway.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "S"]
+# S101 = assert, fine in tests.
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]

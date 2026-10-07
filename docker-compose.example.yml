@@ -1,0 +1,34 @@
+# Qlar Email Gateway — example compose file.
+#
+# Copy to docker-compose.yml, put your settings in .env next to it, then:
+#
+#   docker compose run --rm gateway test-db   # optional: check the database first
+#   docker compose up -d                      # enrol and serve
+#   docker compose logs -f                    # read the fingerprint, then approve in the CMS
+#
+# `enroll` is the command below rather than `run` because it does both: it enrols if this
+# machine is not enrolled yet, and otherwise goes straight to serving. That makes a restart
+# safe - an enrolment code is single use, and re-running this never tries to redeem one.
+#
+# Note what is missing: there is no `ports:` section. The gateway only makes outbound
+# connections, so nothing needs to be published.
+
+services:
+  gateway:
+    image: ghcr.io/pusakaai/email-gateway:0.1.0
+    container_name: qlar-email-gateway
+    restart: unless-stopped
+    command: ["enroll"]
+    env_file: .env
+    volumes:
+      # The gateway's identity (key pair), its enrolment state and your audit log.
+      # Losing this volume means enrolling and being approved again.
+      - ./state:/state
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
