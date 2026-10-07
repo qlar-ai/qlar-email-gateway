@@ -71,7 +71,10 @@ class TestStripQuotedReply:
         assert strip_quoted_reply("Ok.\n-----Original Message-----\nFrom: x") == "Ok."
 
     def test_outlook_header_block_cuts_the_rest(self):
-        text = "Setuju.\n\nFrom: Support <ask@corp.test>\nSent: Wednesday, October 7, 2026 3:00 PM\nTo: Budi\nOld text"
+        text = (
+            "Setuju.\n\nFrom: Support <ask@corp.test>\n"
+            "Sent: Wednesday, October 7, 2026 3:00 PM\nTo: Budi\nOld text"
+        )
         assert strip_quoted_reply(text) == "Setuju."
 
     def test_indonesian_outlook_header_block(self):
