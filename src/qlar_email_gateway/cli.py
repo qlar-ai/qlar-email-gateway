@@ -106,8 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     _configure_logging(args.log_level)
 
     if args.command == "version":
-        print(f"qlar-email-gateway {__version__}")
-        print(f"protocol {PROTOCOL_VERSION}")
+        print(f"qlar-email-gateway {__version__} (protocol {PROTOCOL_VERSION})")
         return 0
 
     settings, connection_ok = _settings_for(args)
