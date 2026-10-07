@@ -297,20 +297,22 @@ class EnrollmentState:
     def save(self, path: Path) -> None:
         """Writes the whole state atomically: a crash mid-write must never leave half a file,
         because this file is the gateway's identity and its place in the mailbox."""
-        payload = json.dumps(
-            {
-                "gatewayId": self.gateway_id,
-                "qlarPublicKeyPem": self.qlar_public_key_pem,
-                "enrolledAt": self.enrolled_at,
-                "baseUrl": self.base_url,
-                "mailboxAddress": self.mailbox_address,
-                "uidValidity": self.uid_validity,
-                "lastUid": self.last_uid,
-                "recipients": self.recipients,
-            },
-            indent=2,
-        )
+        # Serialised inside the lock: the send guard adds recipients from another thread, and a
+        # dict changing size mid-dump would raise or write a torn snapshot.
         with STATE_LOCK:
+            payload = json.dumps(
+                {
+                    "gatewayId": self.gateway_id,
+                    "qlarPublicKeyPem": self.qlar_public_key_pem,
+                    "enrolledAt": self.enrolled_at,
+                    "baseUrl": self.base_url,
+                    "mailboxAddress": self.mailbox_address,
+                    "uidValidity": self.uid_validity,
+                    "lastUid": self.last_uid,
+                    "recipients": self.recipients,
+                },
+                indent=2,
+            )
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_name(path.name + ".tmp")
             temporary.write_text(payload, encoding="utf-8")
@@ -353,8 +355,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
     base_url = os.environ.get("QLAR_BASE_URL", "").strip().rstrip("/")
     if not base_url:
         raise ConfigError(
-            "QLAR_BASE_URL is required. The Qlar CMS email panel shows it; it ends in "
-            "/api/email-gateway"
+            "QLAR_BASE_URL is required. The Qlar CMS email panel shows it; it ends in /api/email-gateway"
         )
     if not base_url.startswith("https://") and "localhost" not in base_url and "127.0.0.1" not in base_url:
         raise ConfigError("QLAR_BASE_URL must use https:// outside local testing")
