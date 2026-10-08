@@ -110,6 +110,10 @@ def _connect(mail: MailSettings) -> tuple[smtplib.SMTP, str]:
         connection: smtplib.SMTP = smtplib.SMTP_SSL(timeout=SMTP_TIMEOUT_SECONDS, context=context)
     else:
         connection = smtplib.SMTP(timeout=SMTP_TIMEOUT_SECONDS)
+    # smtplib only remembers the host when it is given to the constructor, and STARTTLS / SMTP_SSL
+    # verify the certificate against that remembered name; connect() alone leaves it empty
+    # ("check_hostname requires server_hostname"). The constructor would swallow the banner.
+    connection._host = mail.smtp_host
     _, banner = connection.connect(mail.smtp_host, mail.smtp_port)
     connection.ehlo()
     if mail.smtp_security == "starttls":

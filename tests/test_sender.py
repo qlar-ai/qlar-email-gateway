@@ -60,6 +60,8 @@ class Recorder:
 
     def starttls(self, context=None):
         self.calls.append("starttls")
+        # Real smtplib verifies the certificate against `_host`, which connect() never sets.
+        self.tls_hostname = getattr(self, "_host", "")
 
     def login(self, user, password):
         self.calls.append(f"login:{user}")
@@ -109,6 +111,7 @@ def test_headers_and_multipart():
     connection = Recorder.instances[-1]
     assert (connection.host, connection.port, connection.timeout) == ("smtp.corp.test", 587, 30)
     assert "starttls" in connection.calls
+    assert connection.tls_hostname == "smtp.corp.test"
     assert "login:ask@corp.test" in connection.calls
 
     msg = sent_message()

@@ -5,7 +5,17 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The wire protocol version is separate from the
 release version and is listed per release.
 
-## [0.1.0] — unreleased
+## [0.1.1] — 2026-10-08
+
+Protocol 1.
+
+### Fixed
+
+- SMTP over `starttls` or `ssl` failed before login with `check_hostname requires
+  server_hostname`: the connection was opened without telling smtplib the host name it verifies
+  the certificate against. Every real mail server hit this; the unit tests' fake SMTP did not.
+
+## [0.1.0] — 2026-10-08
 
 First release, protocol 1. Started as a copy of `qlar-data-gateway` 0.2.0 (CLI, setup prompts,
 enrolment, signing, polling, audit, Docker and release pipeline) with the database half replaced
