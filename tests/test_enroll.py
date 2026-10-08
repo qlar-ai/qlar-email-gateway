@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from qlar_email_gateway import __version__
 from qlar_email_gateway import enroll as enroll_module
 from qlar_email_gateway.config import EnrollmentState, MailSettings, Settings
 from qlar_email_gateway.enroll import EnrollmentError, enroll
@@ -54,7 +55,7 @@ def test_enroll_sends_mailbox_address_and_idle_flag(tmp_path, captured):
     assert payload["mailboxAddress"] == "ask@corp.test"
     assert payload["idleSupported"] is True
     assert payload["protocol"] == 1
-    assert payload["version"] == "0.1.0"
+    assert payload["version"] == __version__
     assert "providers" not in payload
     assert "Unmistakable-Pa55word" not in str(payload.values())
     assert payload["fingerprint"] == key_fingerprint
