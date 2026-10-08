@@ -9,7 +9,7 @@ PRD §10 criteria 1–9, walked against DEV with a real test mailbox. Fill in **
 |---|---|
 | Messenger-BE (plan 1) and Dialog-BE / CMS-BE / CMS-Web (plan 2) deployed to DEV | user |
 | `EmailGatewayRegistration` container and `Messenger_EmailGateway_SigningPrivateKey` in DEV (`Messenger-BE/docs/email-gateway-runbook.md`) | user |
-| Release `v0.1.0` tagged; GHCR package `pusakaai/email-gateway` set **Public** | user |
+| Release `v0.1.0` tagged; GHCR package `qlar-ai/email-gateway` set **Public** | user |
 | A test mailbox with IMAP + SMTP basic auth or an app password (e.g. `qlar-test@…`) | user |
 | A second, external address to send from (the "customer") | user |
 | A test agent in DEV CMS with a published knowledge base | user |

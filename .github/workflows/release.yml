@@ -49,14 +49,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The image lives under this repository's own org: GITHUB_TOKEN cannot push to another
+      # org's registry ("permission_denied: The requested installation does not exist").
       - name: Build and push image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/pusakaai/email-gateway:${{ steps.version.outputs.number }}
-            ghcr.io/pusakaai/email-gateway:latest
+            ghcr.io/qlar-ai/email-gateway:${{ steps.version.outputs.number }}
+            ghcr.io/qlar-ai/email-gateway:latest
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

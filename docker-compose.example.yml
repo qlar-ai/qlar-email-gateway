@@ -15,7 +15,7 @@
 
 services:
   gateway:
-    image: ghcr.io/pusakaai/email-gateway:0.1.0
+    image: ghcr.io/qlar-ai/email-gateway:0.1.0
     container_name: qlar-email-gateway
     restart: unless-stopped
     # Mailbox settings live in /state/.env (written by the `--init` run above, on the volume, so the

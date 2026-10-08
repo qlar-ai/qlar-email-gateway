@@ -47,4 +47,4 @@ installing:
 sha256sum -c qlar_email_gateway-0.1.0.sha256
 ```
 
-Docker images are published to `ghcr.io/pusakaai/email-gateway` and can be pinned by digest.
+Docker images are published to `ghcr.io/qlar-ai/email-gateway` and can be pinned by digest.
