@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The wire protocol version is separate from the
 release version and is listed per release.
 
+## [Unreleased]
+
+### Fixed
+
+- `enroll` against an unreachable Qlar (an expired TLS certificate, no network) crashed with a
+  traceback. It now says what failed, that a certificate problem is the server's to fix, and
+  that the enrolment code was not used.
+
 ## [0.1.2] — 2026-10-09
 
 Protocol 1. Needs Messenger-BE with the `unknown_gateway` refusal for the deletion part.

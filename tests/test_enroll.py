@@ -126,3 +126,18 @@ def test_a_refused_code_leaves_the_old_enrolment_untouched(tmp_path, monkeypatch
 
     assert EnrollmentState.load(tmp_path / "gateway-state.json").gateway_id == "egw_old"
     assert not (tmp_path / "gateway-state.json.old").exists()
+
+
+def test_an_unreachable_qlar_is_an_enrolment_error_not_a_traceback(tmp_path, monkeypatch):
+    def unreachable(self, path, payload, *, timeout=30.0):
+        raise enroll_module.QlarUnreachable(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired"
+        )
+
+    monkeypatch.setattr(enroll_module.QlarClient, "post", unreachable)
+
+    with pytest.raises(EnrollmentError, match="certificate") as raised:
+        enroll(make_settings(tmp_path), idle_probe=lambda mail: False)
+
+    assert "code was not used" in str(raised.value)
+    assert not (tmp_path / "gateway-state.json").exists()

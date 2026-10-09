@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
-from .client import QlarClient, QlarNotAnEndpoint, QlarRejected
+from .client import QlarClient, QlarNotAnEndpoint, QlarRejected, QlarUnreachable
 from .config import EnrollmentState, MailSettings, Settings, set_aside_state
 from .crypto import fingerprint, load_or_create_private_key, public_key_pem
 
@@ -105,6 +105,19 @@ def enroll(
 
     try:
         _, body = client.post(ENROLL_PATH, payload, timeout=30.0)
+    except QlarUnreachable as unreachable:
+        # Never redeemed, so the code is still good: say so, or people burn a fresh one per retry.
+        hint = (
+            "The server's TLS certificate was refused - expired or not trusted by this machine. "
+            "That is fixed on the server, not here."
+            if "CERTIFICATE" in str(unreachable).upper()
+            else "Check the address, this machine's internet access, and any proxy or firewall."
+        )
+        raise EnrollmentError(
+            f"could not reach Qlar at {settings.base_url}: {unreachable}.\n"
+            f"  {hint}\n"
+            "  The enrolment code was not used; run the same command again once it is reachable."
+        ) from unreachable
     except QlarNotAnEndpoint as wrong_address:
         # Checked before QlarRejected, which it subclasses: a 404 from a static website
         # used to be reported as a rejected code, which sends someone back to the CMS to
