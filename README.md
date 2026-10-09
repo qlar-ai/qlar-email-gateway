@@ -55,14 +55,14 @@ The Qlar CMS (agent → Channels → Email) prints these lines with your own URL
 echo QLAR_BASE_URL=https://api.qlar.ai/messenger/api/email-gateway >> .env
 echo QLAR_ENROLLMENT_CODE=K7P4-9WQX-2MTD >> .env
 docker run -d --name qlar-email-gateway --restart unless-stopped \
-  --env-file .env -v "$PWD/state:/state" ghcr.io/qlar-ai/email-gateway:0.1.1 enroll
+  --env-file .env -v "$PWD/state:/state" ghcr.io/qlar-ai/email-gateway:0.1.2 enroll
 docker logs -f qlar-email-gateway
 ```
 
 **Python**
 
 ```bash
-pip install --upgrade "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.1.1/qlar_email_gateway-0.1.1-py3-none-any.whl"
+pip install --upgrade "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.1.2/qlar_email_gateway-0.1.2-py3-none-any.whl"
 qlar-email-gateway version
 qlar-email-gateway enroll --base-url https://api.qlar.ai/messenger/api/email-gateway --code K7P4-9WQX-2MTD
 ```

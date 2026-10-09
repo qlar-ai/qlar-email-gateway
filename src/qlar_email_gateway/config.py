@@ -319,6 +319,20 @@ class EnrollmentState:
             os.replace(temporary, path)
 
 
+def set_aside_state(path: Path) -> Path | None:
+    """Moves an enrolment that is over to `<name>.old`, so the next enrolment starts clean.
+
+    Renamed rather than deleted: it is the only record of which gateway id this machine used to
+    be, which is the first thing anyone asks when a gateway "disappears" from the CMS.
+    """
+    if not path.exists():
+        return None
+    archived = path.with_name(path.name + ".old")
+    with STATE_LOCK:
+        os.replace(path, archived)
+    return archived
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":

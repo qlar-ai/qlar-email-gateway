@@ -38,7 +38,7 @@ from imapclient.exceptions import LoginError
 
 from . import status as mailbox_status
 from .audit import AuditLog
-from .client import QlarRejected, QlarUnreachable, Revoked
+from .client import QlarRejected, QlarUnreachable, Revoked, stop_reason
 from .config import EnrollmentState, MailSettings, Settings
 from .extract import build_inbound_payload
 from .filters import filter_reason
@@ -347,8 +347,8 @@ class MailboxWatcher:
                 if rejection.status == 400:
                     logger.warning("Qlar refused email %s for good: %s", payload["messageId"], rejection)
                     return False
-                if rejection.status == 403 and reason == "revoked":
-                    raise Revoked from rejection
+                if (stop := stop_reason(rejection)) is not None:
+                    raise stop from rejection
                 if rejection.status == 403 and reason == "pending_approval":
                     self._sleep(APPROVAL_WAIT_SECONDS)
                     continue

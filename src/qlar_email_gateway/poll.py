@@ -26,7 +26,15 @@ from typing import Any
 from . import PROTOCOL_VERSION, __version__
 from . import mailbox as mailbox_module
 from .audit import AuditLog
-from .client import QlarClient, QlarNotAnEndpoint, QlarRejected, QlarUnreachable, Revoked
+from .client import (
+    Deleted,
+    QlarClient,
+    QlarNotAnEndpoint,
+    QlarRejected,
+    QlarUnreachable,
+    Revoked,
+    stop_reason,
+)
 from .config import MAX_CONCURRENT_JOBS, EnrollmentState, MailSettings, Settings
 from .crypto import load_or_create_private_key, verify_job
 from .send_guard import SendGuard
@@ -88,6 +96,9 @@ class PollLoop:
         self._send = sender
         self._test_mailbox = mailbox_tester or mailbox_module.test_mailbox
         self._stopping = threading.Event()
+        #: Set when Qlar told the loop to stop for good, so the caller can tell a deletion (clear
+        #: the state, enrol again) from a revocation (leave everything for a human to look at).
+        self.stopped_by: Revoked | None = None
         self._in_flight = 0
         self._in_flight_lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS, thread_name_prefix="qlar-job")
@@ -129,12 +140,16 @@ class PollLoop:
                     )
                     announced_waiting = True
                 self._sleep_with_jitter(APPROVAL_POLL_SECONDS)
-            except Revoked:
+            except Deleted as deleted:
+                logger.error("this gateway has been deleted in the Qlar CMS; stopping")
+                self.stopped_by = deleted
+                break
+            except Revoked as revoked:
                 logger.error(
-                    "this gateway has been revoked in the Qlar CMS; stopping. Delete %s and enrol "
-                    "again to reconnect.",
-                    self.settings.state_file,
+                    "this gateway has been revoked in the Qlar CMS; stopping. To reconnect, generate "
+                    "a new code in the CMS and run: qlar-email-gateway enroll --code <code>"
                 )
+                self.stopped_by = revoked
                 break
             except QlarUnreachable as error:
                 logger.warning("Qlar unreachable (%s); retrying in %.1fs", error, backoff)
@@ -176,12 +191,11 @@ class PollLoop:
                 timeout=self.settings.poll_timeout_seconds + 15,
             )
         except QlarRejected as rejection:
-            if rejection.status == 403:
-                reason = str(rejection.body.get("reason", "")).lower()
-                if reason == "revoked":
-                    raise Revoked from rejection
-                if reason == "pending_approval":
-                    raise AwaitingApproval from rejection
+            if (stop := stop_reason(rejection)) is not None:
+                raise stop from rejection
+            reason = str(rejection.body.get("reason", "")).lower()
+            if rejection.status == 403 and reason == "pending_approval":
+                raise AwaitingApproval from rejection
             raise
 
         if status == 204 or not body:

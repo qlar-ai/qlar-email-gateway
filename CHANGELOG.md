@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The wire protocol version is separate from the
 release version and is listed per release.
 
+## [0.1.2] — 2026-10-09
+
+Protocol 1. Needs Messenger-BE with the `unknown_gateway` refusal for the deletion part.
+
+### Changed
+
+- `enroll --code <code>` on a machine that is already enrolled enrols it again. The old
+  `gateway-state.json` is moved to `gateway-state.json.old` once Qlar accepts the new code; a
+  refused code (yesterday's command re-run from history) keeps the existing enrolment and serves.
+  It used to stop with "already enrolled ... delete gateway-state.json".
+- Enrolled against a different endpoint (direct App Service URL vs. `api-dev.qlar.ai`) now
+  enrols against the new one instead of refusing.
+
+### Added
+
+- A gateway deleted in the CMS stops serving instead of retrying a `401` forever: Qlar answers
+  `403 {"reason":"unknown_gateway"}`, the state file is set aside, and at a terminal the gateway
+  asks for a new code and carries on. Without a terminal it exits with instructions.
+
 ## [0.1.1] — 2026-10-08
 
 Protocol 1.

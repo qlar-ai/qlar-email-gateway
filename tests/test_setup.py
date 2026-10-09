@@ -307,7 +307,7 @@ class TestTheEnrolmentCode:
     def _capture(self, monkeypatch) -> dict:
         seen: dict = {}
 
-        def fake_enroll(settings):
+        def fake_enroll(settings, **_kw):
             seen["base_url"] = settings.base_url
             seen["code"] = settings.enrollment_code
             raise cli.EnrollmentError("stopping here; the code is what this test is about")
@@ -351,7 +351,7 @@ class TestEnrollingInOneLine:
     def _capture(self, monkeypatch) -> dict:
         seen: dict = {}
 
-        def fake_enroll(settings):
+        def fake_enroll(settings, **_kw):
             seen["base_url"] = settings.base_url
             seen["code"] = settings.enrollment_code
             raise cli.EnrollmentError("stopping here; the arguments are what this tests")
@@ -406,7 +406,7 @@ class TestReadOnlyContainers:
     def _capture(self, monkeypatch) -> dict:
         seen: dict = {}
 
-        def fake_enroll(settings):
+        def fake_enroll(settings, **_kw):
             seen["base_url"] = settings.base_url
             raise cli.EnrollmentError("stopping here")
 

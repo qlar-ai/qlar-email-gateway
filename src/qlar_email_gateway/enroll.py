@@ -26,7 +26,7 @@ from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
 from .client import QlarClient, QlarNotAnEndpoint, QlarRejected
-from .config import EnrollmentState, MailSettings, Settings
+from .config import EnrollmentState, MailSettings, Settings, set_aside_state
 from .crypto import fingerprint, load_or_create_private_key, public_key_pem
 
 ENROLL_PATH = "/enroll"
@@ -54,9 +54,18 @@ class EnrollmentError(Exception):
 
 
 def enroll(
-    settings: Settings, idle_probe: Callable[[MailSettings], bool] = probe_idle
+    settings: Settings,
+    idle_probe: Callable[[MailSettings], bool] = probe_idle,
+    *,
+    replace_existing: bool = False,
 ) -> tuple[EnrollmentState, str]:
-    """Registers this gateway with Qlar. Returns the new state and the key fingerprint."""
+    """Registers this gateway with Qlar. Returns the new state and the key fingerprint.
+
+    `replace_existing` is for a machine that is already enrolled and has been handed a new code:
+    its old gateway was deleted in the CMS, or it is moving to another Qlar endpoint. The old
+    state is set aside only once Qlar has accepted the new code, so a mistyped or expired code
+    leaves the machine exactly as enrolled as it was.
+    """
     if not settings.enrollment_code:
         raise EnrollmentError(
             "QLAR_ENROLLMENT_CODE is not set. Copy the code shown in the Qlar CMS "
@@ -64,10 +73,10 @@ def enroll(
         )
 
     existing = EnrollmentState.load(settings.state_file)
-    if existing is not None:
+    if existing is not None and not replace_existing:
         raise EnrollmentError(
-            f"this gateway is already enrolled as {existing.gateway_id}. "
-            f"To re-enrol, delete {settings.state_file} (and {settings.key_file} to rotate the key)."
+            f"this gateway is already enrolled as {existing.gateway_id}. To enrol it again, "
+            "generate a new code in the CMS and pass it with --code."
         )
 
     private_key, created = load_or_create_private_key(settings.key_file)
@@ -130,6 +139,10 @@ def enroll(
         base_url=settings.base_url,
         mailbox_address=settings.mail.address,
     )
+    # A fresh state, not the old one with a new id: the mailbox position starts at the newest
+    # message again, so mail that arrived while the old gateway was gone is not answered late.
+    if existing is not None:
+        set_aside_state(settings.state_file)
     state.save(settings.state_file)
 
     return state, key_fingerprint

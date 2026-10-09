@@ -26,13 +26,13 @@ mailbox questions once, interactively. The answers are written to `state/.env` o
 mkdir qlar-email-gateway && cd qlar-email-gateway
 echo QLAR_BASE_URL=<the URL the CMS shows> >> .env
 echo QLAR_ENROLLMENT_CODE=<the code the CMS shows> >> .env
-docker run -it --rm --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.1.1 --env-file /state/.env test-mailbox --init
+docker run -it --rm --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.1.2 --env-file /state/.env test-mailbox --init
 ```
 
 That tests the IMAP and SMTP login without contacting Qlar. Then start it for good:
 
 ```bash
-docker run -d --name qlar-email-gateway --restart unless-stopped   --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.1.1 --env-file /state/.env enroll
+docker run -d --name qlar-email-gateway --restart unless-stopped   --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.1.2 --env-file /state/.env enroll
 docker logs -f qlar-email-gateway
 ```
 
@@ -51,7 +51,7 @@ read-only root filesystem.
 
 ```bash
 python3 -m venv /opt/qlar-email-gateway
-/opt/qlar-email-gateway/bin/pip install "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.1.1/qlar_email_gateway-0.1.1-py3-none-any.whl"
+/opt/qlar-email-gateway/bin/pip install "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.1.2/qlar_email_gateway-0.1.2-py3-none-any.whl"
 cd /etc/qlar-email-gateway
 /opt/qlar-email-gateway/bin/qlar-email-gateway enroll --base-url <URL> --code <CODE>
 ```
@@ -104,4 +104,5 @@ On Windows, run the same `pip install` in a virtual environment and start
 | Mailbox status `unreachable` | Host, port or `IMAP_SECURITY` wrong, or a firewall blocks the mail ports |
 | Mailbox status `idle_unsupported` | The server dropped IDLE repeatedly; the gateway checks every `POLL_INTERVAL_SECONDS` instead. Replies may take up to that much longer |
 | A reply is `rejected` in the CMS console | The send guard refused it: the recipient never wrote in (or longer ago than `RECIPIENT_MEMORY_DAYS`), or the hourly limit was reached. Add the address or domain to `RECIPIENT_ALLOWLIST` if it should always be allowed |
-| `this gateway has been revoked` | Someone revoked it in the CMS. Delete `gateway-state.json` and enrol again |
+| `this gateway has been revoked` | Someone revoked it in the CMS. Generate a new code there and run `qlar-email-gateway enroll --code <code>`; the old state is set aside as `gateway-state.json.old` |
+| `Deleted in the Qlar CMS` | The gateway was deleted in the CMS. Its state is already set aside; at a terminal it asks for a new code, otherwise run `qlar-email-gateway enroll --code <code>` |

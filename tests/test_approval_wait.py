@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from qlar_email_gateway.client import QlarRejected
+from qlar_email_gateway.client import Deleted, QlarRejected
 from qlar_email_gateway.config import EnrollmentState, MailSettings, Settings
 from qlar_email_gateway.poll import (
     APPROVAL_POLL_SECONDS,
@@ -143,6 +143,15 @@ def test_revoked_still_stops_the_loop(tmp_path: Path, caplog: pytest.LogCaptureF
     assert any("revoked" in r.message.lower() for r in caplog.records)
     # It stopped at the Revoked rather than carrying on to the poll that would have succeeded.
     assert scripted.answers == [None]
+    assert isinstance(scripted.loop.stopped_by, Revoked)
+
+
+def test_deleted_stops_the_loop_and_says_why(tmp_path: Path) -> None:
+    scripted = _ScriptedLoop(tmp_path, [_rejection("unknown_gateway"), None])
+    scripted.run()
+
+    assert scripted.answers == [None]
+    assert isinstance(scripted.loop.stopped_by, Deleted)
 
 
 def test_other_refusals_still_back_off_and_are_reported(
@@ -182,6 +191,9 @@ class TestReasonClassification:
 
     def test_revoked_is_named(self, tmp_path: Path) -> None:
         assert self._classify(tmp_path, _rejection("revoked")) is Revoked
+
+    def test_unknown_gateway_is_named_deleted(self, tmp_path: Path) -> None:
+        assert self._classify(tmp_path, _rejection("unknown_gateway")) is Deleted
 
     @pytest.mark.parametrize("reason", ["unauthorized", "clock_skew", ""])
     def test_everything_else_stays_generic(self, tmp_path: Path, reason: str) -> None:

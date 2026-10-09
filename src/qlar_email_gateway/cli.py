@@ -35,7 +35,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import PROTOCOL_VERSION, __version__, console
-from .client import Revoked
+from .client import Deleted, Revoked
 from .config import (
     ConfigError,
     EnrollmentState,
@@ -43,6 +43,7 @@ from .config import (
     load_dotenv,
     load_settings,
     read_env_text,
+    set_aside_state,
     write_env_values,
 )
 from .crypto import fingerprint, load_or_create_private_key, public_key_pem
@@ -232,13 +233,34 @@ def _command_enroll(
 
     state = EnrollmentState.load(settings.state_file)
     if state is not None and state.base_url == settings.base_url:
-        # Already ours. Enrolling again is not just unnecessary, it is impossible: the code was
-        # redeemed once and Qlar keeps only a hash of it.
+        if code:
+            # A code typed on the command line is a request to enrol again: the old gateway was
+            # deleted in the CMS and a new code generated. It may equally be yesterday's command
+            # re-run from shell history after a reboot, with a code long spent - so a refused
+            # code falls back to the enrolment this machine already has instead of failing.
+            try:
+                new_state, key_fingerprint = enroll(settings, replace_existing=True)
+            except EnrollmentError as error:
+                console.banner(f"Qlar Email Gateway {__version__}")
+                console.field("endpoint", settings.base_url)
+                console.field("gateway id", state.gateway_id)
+                console.detail(f"the code was not used ({_first_line(error)}); keeping this enrolment")
+                return _serve(settings, state, connection_ok)
+            _announce_enrolled(settings, new_state, key_fingerprint)
+            return _serve(settings, new_state, connection_ok)
+
+        # Already ours. Enrolling again is not just unnecessary, it is impossible: the code in
+        # the environment was redeemed once and Qlar keeps only a hash of it.
         console.banner(f"Qlar Email Gateway {__version__}")
         console.field("endpoint", settings.base_url)
         console.field("gateway id", state.gateway_id)
         console.detail("already enrolled; starting")
         return _serve(settings, state, connection_ok)
+
+    if state is not None:
+        # Enrolled against a different endpoint. A gateway is registered with one Qlar, so a new
+        # endpoint means a new enrolment; the old state is set aside once the new code is accepted.
+        console.field("previously", f"{state.gateway_id} at {state.base_url}")
 
     # The code was the one answer the setup prompts did not cover, so it had to be typed
     # into `.env` by hand - and the instructions for doing that are shell-specific in a way
@@ -252,11 +274,16 @@ def _command_enroll(
             return 2
 
     try:
-        state, key_fingerprint = enroll(settings)
+        state, key_fingerprint = enroll(settings, replace_existing=state is not None)
     except EnrollmentError as error:
         print(f"enrolment failed: {error}", file=sys.stderr)
         return 1
 
+    _announce_enrolled(settings, state, key_fingerprint)
+    return _serve(settings, state, connection_ok)
+
+
+def _announce_enrolled(settings: Settings, state: EnrollmentState, key_fingerprint: str) -> None:
     console.banner("Enrolled. One thing left: approve this gateway in the Qlar CMS.")
     console.field("gateway id", state.gateway_id)
     console.field("state file", settings.state_file)
@@ -269,7 +296,10 @@ def _command_enroll(
     console.step(2, "check the fingerprint matches, then click Approve")
     console.step(3, "nothing. This keeps running and starts working when you do.")
     print()
-    return _serve(settings, state, connection_ok)
+
+
+def _first_line(error: Exception) -> str:
+    return str(error).splitlines()[0] if str(error) else type(error).__name__
 
 
 def _remember_base_url(settings: Settings, env_file: Path) -> None:
@@ -331,7 +361,8 @@ def _command_run(settings: Settings, connection_ok: bool | None) -> int:
     if state.base_url != settings.base_url:
         print(
             f"QLAR_BASE_URL ({settings.base_url}) does not match the URL this gateway enrolled "
-            f"against ({state.base_url}). Re-enrol if the Qlar endpoint really changed.",
+            f"against ({state.base_url}). If the Qlar endpoint really changed, generate a new code "
+            "in the CMS and run: qlar-email-gateway enroll --base-url <URL> --code <code>",
             file=sys.stderr,
         )
         return 2
@@ -340,11 +371,68 @@ def _command_run(settings: Settings, connection_ok: bool | None) -> int:
 
 
 def _serve(settings: Settings, state: EnrollmentState, connection_ok: bool | None) -> int:
+    """Serves until stopped or revoked, enrolling again if the gateway is deleted in the CMS.
+
+    Shared by `run` and `enroll`, which differ only in how they got hold of the enrolment.
+    """
+    while True:
+        exit_code, stopped_by = _serve_once(settings, state, connection_ok)
+        if not isinstance(stopped_by, Deleted):
+            return exit_code
+
+        replacement = _enroll_after_deletion(settings, state)
+        if replacement is None:
+            return 1
+        state, connection_ok = replacement, True
+
+
+def _enroll_after_deletion(settings: Settings, state: EnrollmentState) -> EnrollmentState | None:
+    """The gateway no longer exists in Qlar: clear its state, and ask for a new code if anyone can answer.
+
+    Without this, a deleted gateway kept a state file pointing at an id Qlar had forgotten, and
+    the next `enroll` refused to run until someone found and deleted the file by hand.
+    """
+    archived = set_aside_state(settings.state_file)
+    console.warning(
+        "Deleted in the Qlar CMS",
+        f"Gateway {state.gateway_id} no longer exists in Qlar, so this machine stopped serving.",
+        f"Its old state was moved to {archived}." if archived else "",
+        "",
+        "To reconnect, generate a new code in the CMS (your agent > Channels > Email).",
+        file=sys.stderr,
+    )
+
+    if not can_prompt():
+        print(
+            "Then run: qlar-email-gateway enroll --code <code>  "
+            "(or put it in QLAR_ENROLLMENT_CODE and restart)",
+            file=sys.stderr,
+        )
+        return None
+
+    while True:
+        try:
+            code = ask_enrollment_code()
+        except SetupAborted as error:
+            print(f"cancelled: {error}", file=sys.stderr)
+            return None
+        try:
+            new_state, key_fingerprint = enroll(replace(settings, enrollment_code=code))
+        except EnrollmentError as error:
+            print(f"enrolment failed: {error}", file=sys.stderr)
+            continue
+        _announce_enrolled(settings, new_state, key_fingerprint)
+        return new_state
+
+
+def _serve_once(
+    settings: Settings, state: EnrollmentState, connection_ok: bool | None
+) -> tuple[int, Revoked | None]:
     """Checks the mailbox, then watches it and answers jobs until stopped or revoked.
 
-    Shared by `run` and `enroll`, which differ only in how they got hold of the enrolment. The
-    two loops share the signing key, the HTTP client, the state file, the send guard's memory and
-    the mailbox status; either one learning that the gateway is revoked stops both.
+    The two loops share the signing key, the HTTP client, the state file, the send guard's memory
+    and the mailbox status; either one learning that the gateway is revoked or deleted stops both.
+    Returns the exit code and, when Qlar ended it, why.
     """
     if connection_ok is None:
         connection_ok = check_connection(settings)
@@ -371,8 +459,11 @@ def _serve(settings: Settings, state: EnrollmentState, connection_ok: bool | Non
     def watch() -> None:
         try:
             watcher.run_forever()
-        except Revoked:
-            log.error("this gateway has been revoked in the Qlar CMS; stopping")
+        except Revoked as stop:
+            what = "deleted" if isinstance(stop, Deleted) else "revoked"
+            log.error("this gateway has been %s in the Qlar CMS; stopping", what)
+            if loop.stopped_by is None:
+                loop.stopped_by = stop
             loop.stop()
         except Exception:
             # A bug, not a mail server problem (those are retried inside). Stop everything so a
@@ -388,14 +479,20 @@ def _serve(settings: Settings, state: EnrollmentState, connection_ok: bool | Non
         watcher.stop()
         loop.stop()
 
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+    previous_handlers = {
+        signum: signal.signal(signum, _handle_signal) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
 
     thread.start()
     loop.run_forever()
     watcher.stop()
     thread.join(timeout=10)
-    return outcome["exit"]
+
+    # Put Ctrl-C back the way it was: after a deletion the next thing is a prompt for a new code,
+    # and with this handler still installed Ctrl-C there would do nothing at all.
+    for signum, handler in previous_handlers.items():
+        signal.signal(signum, handler)
+    return outcome["exit"], loop.stopped_by
 
 
 def _configure_logging(level: str) -> None:

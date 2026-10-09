@@ -91,7 +91,8 @@ Qlar rejects a request with `401` when the signature does not verify against the
 public key (`{"reason":"unauthorized"}`), when the timestamp is more than **120 seconds** from
 its own clock (`{"reason":"clock_skew"}`), or when the nonce has been seen within the last
 **5 minutes** (`{"reason":"unauthorized"}`). A gateway not in `active` state gets `403` (see
-§4). A clock more than two minutes out is the most common cause of `401` — check NTP first.
+§4), and so does a gateway id Qlar has no record of — deleted in the CMS
+(`{"reason":"unknown_gateway"}`). A request without `X-Qlar-Gateway-Id` is a flat `401`. A clock more than two minutes out is the most common cause of `401` — check NTP first.
 
 ### Signing a job
 
@@ -236,6 +237,7 @@ is shown **online** when it polled within the last **90 seconds**.
 | `401` with `{"reason":"clock_skew"}` or `{"reason":"unauthorized"}` | timestamp, signature or nonce rejected |
 | `403` with `{"reason":"pending_approval"}` | enrolled but not yet approved — keep polling, report it as a wait |
 | `403` with `{"reason":"revoked"}` | stop; a human must re-enrol this gateway |
+| `403` with `{"reason":"unknown_gateway"}` | the gateway was deleted in the CMS: stop, set the state file aside, and enrol again with a new code |
 
 ### The job
 

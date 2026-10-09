@@ -38,6 +38,28 @@ class Revoked(Exception):
     """Qlar says this gateway is revoked. Both loops stop; a human must re-enrol it."""
 
 
+class Deleted(Revoked):
+    """Qlar has no gateway with this id any more: it was deleted in the CMS.
+
+    A subclass because every loop must stop exactly as it does for a revocation. The difference
+    is what happens next: a revoked gateway still exists and can be inspected in the CMS, while a
+    deleted one never will again, so its state file is dead weight that would only block the next
+    enrolment.
+    """
+
+
+def stop_reason(rejection: QlarRejected) -> type[Revoked] | None:
+    """The exception a refusal means the gateway must stop with, or None to carry on."""
+    if rejection.status != 403:
+        return None
+    reason = str(rejection.body.get("reason", "")).lower()
+    if reason == "unknown_gateway":
+        return Deleted
+    if reason == "revoked":
+        return Revoked
+    return None
+
+
 class QlarUnreachable(Exception):
     """Qlar could not be reached — a network problem, not a rejection."""
 
