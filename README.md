@@ -17,10 +17,10 @@ no port, needs no firewall rule, no certificate and no DNS entry.
   machine and is never sent to Qlar, logged, printed or audited.
 - **Both directions are signed.** The gateway signs every request with its own key; Qlar signs
   every reply job, and the gateway discards a job whose signature does not verify.
-- **The gateway decides who may be emailed.** A reply only goes to someone who wrote to this
-  mailbox in the last `RECIPIENT_MEMORY_DAYS` days (or is on `RECIPIENT_ALLOWLIST`), at most
-  `MAX_SENDS_PER_HOUR_PER_RECIPIENT` times an hour, with no attachments, and always from your own
-  address. Nothing Qlar sends can loosen this.
+- **Every send is checked here.** One recipient per reply, at most
+  `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies to them an hour, no attachments, and always from your
+  own address. Nothing Qlar sends can loosen this. Who the agent answers is set in the Qlar CMS
+  (the channel's public / private mode and its contact lists).
 - **Your mailbox is left alone.** The gateway never marks mail as read, never moves or deletes it.
 - **You keep a record.** Every email forwarded, filtered and sent is written to a local JSONL
   audit file (`AUDIT_LOG_FILE`).
@@ -55,14 +55,14 @@ The Qlar CMS (agent → Channels → Email) prints these lines with your own URL
 echo QLAR_BASE_URL=https://api.qlar.ai/messenger/api/email-gateway >> .env
 echo QLAR_ENROLLMENT_CODE=K7P4-9WQX-2MTD >> .env
 docker run -d --name qlar-email-gateway --restart unless-stopped \
-  --env-file .env -v "$PWD/state:/state" ghcr.io/qlar-ai/email-gateway:0.1.2 enroll
+  --env-file .env -v "$PWD/state:/state" ghcr.io/qlar-ai/email-gateway:0.1.3 enroll
 docker logs -f qlar-email-gateway
 ```
 
 **Python**
 
 ```bash
-pip install --upgrade "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.1.2/qlar_email_gateway-0.1.2-py3-none-any.whl"
+pip install --upgrade "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.1.3/qlar_email_gateway-0.1.3-py3-none-any.whl"
 qlar-email-gateway version
 qlar-email-gateway enroll --base-url https://api.qlar.ai/messenger/api/email-gateway --code K7P4-9WQX-2MTD
 ```
@@ -99,8 +99,6 @@ All settings live in `.env` (see [.env.example](.env.example)); real environment
 | `MAIL_ADDRESS` | Mailbox address when it differs from the user | `MAIL_USER` |
 | `MAIL_FROM_NAME` | Sender name on replies | — |
 | `POLL_INTERVAL_SECONDS` | Check interval when the server has no IDLE | 60 |
-| `RECIPIENT_ALLOWLIST` | Addresses or domains that may always be emailed (`a@x.com, @corp.com, y.org`) | — |
-| `RECIPIENT_MEMORY_DAYS` | How long someone who wrote in may be answered | 30 |
 | `MAX_SENDS_PER_HOUR_PER_RECIPIENT` | Send rate limit per recipient | 20 |
 | `MAX_INBOUND_TEXT_CHARS` | Longest text forwarded per email | 20000 |
 | `AUDIT_LOG_FILE` | Local JSONL audit | `./audit/mail.jsonl` (`/state/audit/mail.jsonl` in Docker) |

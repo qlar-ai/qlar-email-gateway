@@ -247,13 +247,14 @@ def test_filtered_mail_advances_without_posting(tmp_path):
     assert (entry["status"], entry["reason"]) == ("filtered", "auto_submitted")
 
 
-def test_forwarded_sender_and_reply_to_are_remembered(tmp_path):
+def test_forwarding_no_longer_records_senders(tmp_path):
+    # Since 0.1.3 replies are not limited to recent senders, so nothing is remembered about them.
     imap = FakeImap({11: raw_email(11, Reply_To="Team@Customer.Test")})
     harness = Harness(tmp_path, imap)
 
     harness.run_until_poll_wait()
 
-    assert set(harness.state.recipients) == {"sender11@customer.test", "team@customer.test"}
+    assert harness.state.recipients == {}
 
 
 def test_uses_body_peek_never_sets_seen(tmp_path):

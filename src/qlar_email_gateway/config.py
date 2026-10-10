@@ -22,7 +22,6 @@ from typing import Literal
 
 DEFAULT_POLL_TIMEOUT_SECONDS = 25
 DEFAULT_POLL_INTERVAL_SECONDS = 60
-DEFAULT_RECIPIENT_MEMORY_DAYS = 30
 DEFAULT_MAX_SENDS_PER_HOUR_PER_RECIPIENT = 20
 DEFAULT_MAX_INBOUND_TEXT_CHARS = 20000
 
@@ -216,8 +215,6 @@ def _new_env_file_header() -> list[str]:
         "#QLAR_ENROLLMENT_CODE=         # one-time code from the CMS, only needed for `enroll`",
         "#IMAP_FOLDER=INBOX",
         "#POLL_INTERVAL_SECONDS=60      # only used when the server has no IDLE",
-        "#RECIPIENT_ALLOWLIST=          # addresses or domains that may always be emailed",
-        "#RECIPIENT_MEMORY_DAYS=30",
         "#MAX_SENDS_PER_HOUR_PER_RECIPIENT=20",
         "#MAX_INBOUND_TEXT_CHARS=20000",
         "#AUDIT_LOG_FILE=./audit/mail.jsonl",
@@ -257,8 +254,6 @@ class Settings:
     verify_tls: bool
     mail: MailSettings
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
-    recipient_allowlist: tuple[str, ...] = ()
-    recipient_memory_days: int = DEFAULT_RECIPIENT_MEMORY_DAYS
     max_sends_per_hour_per_recipient: int = DEFAULT_MAX_SENDS_PER_HOUR_PER_RECIPIENT
     max_inbound_text_chars: int = DEFAULT_MAX_INBOUND_TEXT_CHARS
 
@@ -274,7 +269,8 @@ class EnrollmentState:
     mailbox_address: str = ""
     uid_validity: int | None = None
     last_uid: int | None = None
-    #: Lowercased address -> ISO time it last wrote in. The send guard's memory (FR-33).
+    #: Lowercased address -> ISO time it last wrote in. Written by gateways before 0.1.3, whose send
+    #: guard only answered recent senders; no longer read or updated, kept so old files round-trip.
     recipients: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -357,10 +353,6 @@ def _env_security(name: str, default: str) -> Literal["ssl", "starttls"]:
     return value  # type: ignore[return-value]
 
 
-def _env_list(name: str) -> tuple[str, ...]:
-    return tuple(item.strip().lower() for item in os.environ.get(name, "").split(",") if item.strip())
-
-
 def load_settings(env_file: Path | None = None) -> Settings:
     """Builds the settings, raising ConfigError with an actionable message on any gap."""
     if env_file is not None:
@@ -410,8 +402,6 @@ def load_settings(env_file: Path | None = None) -> Settings:
         verify_tls=_env_bool("QLAR_INSECURE_SKIP_TLS_VERIFY", False) is False,
         mail=mail,
         poll_interval_seconds=_env_int("POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS),
-        recipient_allowlist=_env_list("RECIPIENT_ALLOWLIST"),
-        recipient_memory_days=_env_int("RECIPIENT_MEMORY_DAYS", DEFAULT_RECIPIENT_MEMORY_DAYS),
         max_sends_per_hour_per_recipient=_env_int(
             "MAX_SENDS_PER_HOUR_PER_RECIPIENT", DEFAULT_MAX_SENDS_PER_HOUR_PER_RECIPIENT
         ),

@@ -5,7 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The wire protocol version is separate from the
 release version and is listed per release.
 
-## [Unreleased]
+## [0.1.3] — 2026-10-11
+
+Protocol 1. No Messenger-BE change needed.
+
+### Removed
+
+- The recent-senders rule of the send guard. A reply no longer has to go to someone who wrote to
+  the mailbox in the last 30 days, and `RECIPIENT_ALLOWLIST` / `RECIPIENT_MEMORY_DAYS` are ignored
+  (an existing `.env` that sets them still loads). Who the agent answers is decided in the Qlar CMS
+  — the channel's public / private mode and contact lists — and test sends now reach any address.
+  The guard still allows one recipient per reply, as one bare address, and at most
+  `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies per recipient per hour.
 
 ### Fixed
 

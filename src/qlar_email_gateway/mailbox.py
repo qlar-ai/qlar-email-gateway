@@ -325,10 +325,6 @@ class MailboxWatcher:
             return
 
         if self._forward(payload):
-            try:
-                self.guard.remember_inbound([payload["from"]["address"], payload.get("replyTo")])
-            except OSError as error:
-                logger.error("could not record the sender for replies: %s", error)
             self.audit.record(status="forwarded", uid=uid, **description)
             self._advance(uid)
         elif not self._stopping.is_set():

@@ -43,15 +43,16 @@ server over IMAP/SMTP. Qlar cannot open a connection to it.
 The send guard runs on this machine and nothing in a job can change it:
 
 - `From` is always the configured mailbox.
-- One recipient per reply, and only someone who emailed this mailbox through the gateway within
-  `RECIPIENT_MEMORY_DAYS` (both their `From` and `Reply-To` are remembered), or an address or
-  domain on `RECIPIENT_ALLOWLIST`.
+- One recipient per reply, given as one bare address (no display name, list or header tricks).
 - At most `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies per recipient per hour.
 - No attachments are ever sent.
 - Expired jobs are refused.
 
-A compromised Qlar could therefore send at most short replies, from your address, to people who
-recently wrote to you — not mail to arbitrary addresses.
+Since 0.1.3 the gateway no longer limits replies to people who recently wrote in (the old
+`RECIPIENT_ALLOWLIST` / `RECIPIENT_MEMORY_DAYS` settings are ignored): who the agent answers is set
+in the Qlar CMS. A compromised Qlar could therefore send short text emails from your address to any
+address, one recipient at a time and at most `MAX_SENDS_PER_HOUR_PER_RECIPIENT` per recipient per
+hour — never attachments, never from another address.
 
 ### Your mailbox
 

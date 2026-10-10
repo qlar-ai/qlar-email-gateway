@@ -1,4 +1,4 @@
-"""Who the gateway may email (PRD FR-33). Enforced here; nothing in a job can loosen it."""
+"""What the gateway checks before a send (PRD FR-33). Enforced here; nothing in a job can loosen it."""
 
 from __future__ import annotations
 
@@ -51,21 +51,12 @@ def guard_for(tmp_path, clock, **overrides) -> tuple[SendGuard, EnrollmentState]
     return SendGuard(make_settings(tmp_path, **overrides), state, clock=clock), state
 
 
-def test_reply_to_and_case_insensitive_recipient_allowed(tmp_path, clock):
-    guard, state = guard_for(tmp_path, clock)
-
-    guard.remember_inbound(["Budi@Customer.Test", "Team@Customer.Test", None])
-
-    assert guard.check(["budi@customer.test"]) is None
-    assert guard.check(["TEAM@customer.test"]) is None
-    assert EnrollmentState.load(tmp_path / "state.json").recipients == state.recipients
-    assert set(state.recipients) == {"budi@customer.test", "team@customer.test"}
-
-
-def test_unknown_recipient_rejected(tmp_path, clock):
+def test_anyone_may_be_emailed_case_insensitively(tmp_path, clock):
+    # Since 0.1.3 the gateway no longer limits replies to recent senders: Qlar's contact rules decide.
     guard, _ = guard_for(tmp_path, clock)
 
-    assert guard.check(["stranger@elsewhere.test"]) == "recipient_not_known"
+    assert guard.check(["stranger@elsewhere.test"]) is None
+    assert guard.check(["Budi@Customer.Test"]) is None
 
 
 def test_no_recipient(tmp_path, clock):
@@ -77,35 +68,12 @@ def test_no_recipient(tmp_path, clock):
 
 def test_multiple_recipients_rejected(tmp_path, clock):
     guard, _ = guard_for(tmp_path, clock)
-    guard.remember_inbound(["a@x.test", "b@x.test"])
 
     assert guard.check(["a@x.test", "b@x.test"]) == "too_many_recipients"
 
 
-def test_allowlist_address_and_domain_allowed(tmp_path, clock):
-    guard, _ = guard_for(tmp_path, clock, recipient_allowlist=("a@x.com", "@corp.com", "y.org"))
-
-    assert guard.check(["A@X.com"]) is None
-    assert guard.check(["x@corp.com"]) is None
-    assert guard.check(["x@y.org"]) is None
-    assert guard.check(["x@evilcorp.com"]) == "recipient_not_known"
-    assert guard.check(["x@sub.corp.com"]) == "recipient_not_known"
-
-
-def test_memory_expires_after_days(tmp_path, clock):
-    guard, _ = guard_for(tmp_path, clock)
-    guard.remember_inbound(["budi@customer.test"])
-
-    clock.now += timedelta(days=29, hours=23)
-    assert guard.check(["budi@customer.test"]) is None
-
-    clock.now += timedelta(days=1, hours=2)
-    assert guard.check(["budi@customer.test"]) == "recipient_not_known"
-
-
 def test_twenty_first_send_in_an_hour_rate_limited(tmp_path, clock):
     guard, _ = guard_for(tmp_path, clock)
-    guard.remember_inbound(["budi@customer.test"])
 
     for _ in range(20):
         assert guard.check(["budi@customer.test"]) is None
@@ -120,7 +88,6 @@ def test_twenty_first_send_in_an_hour_rate_limited(tmp_path, clock):
 
 def test_rate_limit_is_per_recipient(tmp_path, clock):
     guard, _ = guard_for(tmp_path, clock, max_sends_per_hour_per_recipient=1)
-    guard.remember_inbound(["a@x.test", "b@x.test"])
     guard.record_send("a@x.test")
 
     assert guard.check(["a@x.test"]) == "rate_limited"
@@ -138,7 +105,7 @@ def test_rate_limit_is_per_recipient(tmp_path, clock):
     ],
 )
 def test_a_recipient_that_is_not_one_bare_address_is_refused(tmp_path, clock, smuggled):
-    # With a domain allowlist, "x@evil.com, y@corp.com" ends in corp.com but SMTP sends to evil.com.
-    guard, _ = guard_for(tmp_path, clock, recipient_allowlist=("corp.com",))
+    # "x@evil.com, y@corp.com" is one string in the job, but SMTP would deliver to both.
+    guard, _ = guard_for(tmp_path, clock)
 
     assert guard.check([smuggled]) == "invalid_recipient"

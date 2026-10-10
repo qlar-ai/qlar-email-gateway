@@ -42,8 +42,6 @@ def test_mail_defaults(env):
     assert (mail.smtp_host, mail.smtp_port, mail.smtp_security) == ("smtp.corp.test", 587, "starttls")
     assert mail.password == "s3cret"
     assert settings.poll_interval_seconds == 60
-    assert settings.recipient_allowlist == ()
-    assert settings.recipient_memory_days == 30
     assert settings.max_sends_per_hour_per_recipient == 20
     assert settings.max_inbound_text_chars == 20000
 
@@ -53,12 +51,6 @@ def test_mail_address_defaults_to_user_lowercased(env):
 
     env.setenv("MAIL_ADDRESS", "Support@Corp.Test")
     assert load_settings().mail.address == "support@corp.test"
-
-
-def test_allowlist_parses_comma_separated_addresses_and_domains(env):
-    env.setenv("RECIPIENT_ALLOWLIST", "a@x.com, @corp.com ,y.org")
-
-    assert load_settings().recipient_allowlist == ("a@x.com", "@corp.com", "y.org")
 
 
 def test_missing_mailbox_settings_are_named(env):

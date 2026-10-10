@@ -128,9 +128,7 @@ class Harness:
 
 @pytest.fixture
 def harness(tmp_path, qlar_key) -> Harness:
-    h = Harness(tmp_path, qlar_key)
-    h.loop.guard.remember_inbound(["budi@customer.test"])
-    return h
+    return Harness(tmp_path, qlar_key)
 
 
 def test_send_email_happy_path_posts_ok_result(harness):
@@ -152,7 +150,6 @@ def test_send_email_happy_path_posts_ok_result(harness):
 
 def test_send_is_counted_against_the_rate_limit(tmp_path, qlar_key):
     harness = Harness(tmp_path, qlar_key, max_sends_per_hour_per_recipient=1)
-    harness.loop.guard.remember_inbound(["budi@customer.test"])
 
     harness.loop._run_job(harness.job(jobId="job_1"))
     harness.loop._run_job(harness.job(jobId="job_2"))
@@ -192,12 +189,19 @@ def test_expired_job_reports_expired(harness):
     assert harness.audit()[-1]["status"] == "expired"
 
 
-def test_unknown_recipient_reports_rejected_and_does_not_send(harness):
+def test_a_recipient_who_never_wrote_in_is_sent_to(harness):
     harness.loop._run_job(harness.job(to=["stranger@elsewhere.test"]))
+
+    assert [job["jobId"] for job in harness.sent] == ["job_1"]
+    assert harness.results()[-1]["status"] == "ok"
+
+
+def test_two_recipients_report_rejected_and_do_not_send(harness):
+    harness.loop._run_job(harness.job(to=["a@x.test", "b@x.test"]))
 
     assert harness.sent == []
     error = harness.results()[-1]["error"]
-    assert (error["category"], error["code"]) == ("rejected", "recipient_not_known")
+    assert (error["category"], error["code"]) == ("rejected", "too_many_recipients")
     assert harness.audit()[-1]["status"] == "send_rejected"
 
 
