@@ -44,6 +44,7 @@ class AuditLog:
         duration_ms: int | None = None,
         job_id: str | None = None,
         uid: int | None = None,
+        gateway_id: str | None = None,
     ) -> None:
         """Appends one entry. Never raises — auditing must not stop mail flowing.
 
@@ -67,6 +68,9 @@ class AuditLog:
             "jobId": job_id,
             "uid": uid,
         }
+
+        if gateway_id is not None:
+            entry["gatewayId"] = gateway_id
 
         try:
             with _lock:

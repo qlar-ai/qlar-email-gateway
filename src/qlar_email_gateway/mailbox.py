@@ -142,6 +142,7 @@ class MailboxWatcher:
         imap_factory: Callable[[MailSettings], Any] = default_imap_factory,
         clock: Callable[[], datetime] = utcnow,
         sleep: Callable[[float], None] | None = None,
+        login_retry_schedule: tuple[int, ...] = (LOGIN_RETRY_SECONDS,),
     ) -> None:
         self.settings = settings
         self.state = state
@@ -155,6 +156,7 @@ class MailboxWatcher:
         self._sleep = sleep or self._interruptible_sleep
         self._idle_drops: deque[datetime] = deque()
         self._idle_disabled = False
+        self.login_retry_schedule = login_retry_schedule
 
     # -- lifecycle -----------------------------------------------------------------------------
 
@@ -164,6 +166,7 @@ class MailboxWatcher:
     def run_forever(self) -> None:
         """Watches until stopped. Raises Revoked when Qlar says this gateway is revoked."""
         backoff = RECONNECT_MIN_SECONDS
+        login_failures = 0
 
         while not self._stopping.is_set():
             imap: Any = None
@@ -175,6 +178,7 @@ class MailboxWatcher:
                 self._select(imap)
                 self.status.set(mailbox_status.IDLE_UNSUPPORTED if self._idle_disabled else mailbox_status.OK)
                 backoff = RECONNECT_MIN_SECONDS
+                login_failures = 0
 
                 self._sync(imap)
                 if uses_idle:
@@ -185,13 +189,16 @@ class MailboxWatcher:
             except Revoked:
                 raise
             except LoginError:
+                schedule = self.login_retry_schedule
+                delay = schedule[min(login_failures, len(schedule) - 1)]
+                login_failures += 1
                 logger.error(
                     "the mail server refused the login for %s; retrying in %ds",
                     self.settings.mail.user,
-                    LOGIN_RETRY_SECONDS,
+                    delay,
                 )
                 self.status.set(mailbox_status.AUTH_FAILED)
-                self._sleep(LOGIN_RETRY_SECONDS)
+                self._sleep(delay)
             except CONNECTION_ERRORS as error:
                 if in_idle:
                     self._record_idle_drop()

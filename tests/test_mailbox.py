@@ -455,3 +455,51 @@ def test_a_state_file_that_cannot_be_written_does_not_look_like_a_network_failur
 
     assert [payload["uid"] for payload in harness.qlar.posts] == [11, 12]
     assert harness.status.get() == "ok"
+
+
+def test_login_backoff_walks_schedule_and_stays_on_last(tmp_path):
+    imap = FakeImap({}, login_error=LoginError("AUTHENTICATIONFAILED"))
+    harness = Harness(tmp_path, imap)
+    harness.watcher.login_retry_schedule = (1, 2, 5)
+    harness.stop_when = lambda seconds: len(harness.sleeps) == 4
+
+    harness.watcher.run_forever()
+
+    assert harness.sleeps == [1, 2, 5, 5]
+
+
+def test_successful_login_resets_login_backoff(tmp_path):
+    imap = FakeImap({}, login_error=LoginError("AUTHENTICATIONFAILED"))
+    harness = Harness(tmp_path, imap)
+    harness.watcher.login_retry_schedule = (1, 2, 5)
+    attempts = {"count": 0}
+    original_login = imap.login
+
+    def flaky_login(user, password):
+        attempts["count"] += 1
+        if attempts["count"] == 3:
+            imap.login_error = None  # third attempt succeeds, then the connection drops
+        elif attempts["count"] == 4:
+            imap.login_error = LoginError("AUTHENTICATIONFAILED")
+        return original_login(user, password)
+
+    imap.login = flaky_login
+    imap.idle_check_effect = None
+
+    def drop_after_login(seconds):
+        return len(harness.sleeps) >= 4
+
+    harness.stop_when = drop_after_login
+    imap.noop = lambda: (_ for _ in ()).throw(ConnectionResetError())  # drop once logged in
+    harness.watcher.run_forever()
+
+    # fail(1), fail(2), success then connection loss (reconnect backoff), fail again -> 1 again
+    assert harness.sleeps[0] == 1
+    assert harness.sleeps[1] == 2
+    assert harness.sleeps[-1] == 1
+
+
+def test_default_login_schedule_is_sixty_seconds(tmp_path):
+    harness = Harness(tmp_path, FakeImap({}))
+
+    assert harness.watcher.login_retry_schedule == (60,)
