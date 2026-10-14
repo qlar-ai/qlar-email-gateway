@@ -86,6 +86,10 @@ class HostedController:
         #: Runtimes that outlived their stop request: their state file is still in use, so no new
         #: runtime for the same id may start until they are dead.
         self._lingering: dict[str, Any] = {}
+        #: Runtimes whose `stop()` is in flight (it joins for seconds, outside the lock). Their id
+        #: is in neither `runtimes` nor `_lingering` yet, so this is what keeps a second runtime off
+        #: the same state files meanwhile.
+        self._stopping: dict[str, Any] = {}
         #: configure/refresh commands that could not be applied yet; the next reconcile does it.
         self._pending_restart: set[str] = set()
         #: Mailboxes whose runtime Qlar stopped as revoked while the list still showed them: left
@@ -172,6 +176,7 @@ class HostedController:
         with self._lock:
             desired = self._desired(rows)
             gone = [g for g in self.runtimes if g not in desired]
+            left_halted = sorted(self._halted - desired.keys())
             self._halted &= desired.keys()
             self._pending_restart &= desired.keys()
             restarts = sorted(self._pending_restart)
@@ -179,6 +184,9 @@ class HostedController:
         for gateway_id in gone:
             logger.info("mailbox %s is gone or revoked; stopping it", gateway_id)
             self._drop(gateway_id, forget=True)
+        for gateway_id in left_halted:
+            # Halted as revoked, and the row is gone now: its key and audit are no longer needed.
+            self._forget_state(gateway_id)
         self._retry_state_purges(desired)
 
         attempted: set[str] = set()
@@ -248,6 +256,11 @@ class HostedController:
         with self._lock:
             if self._stopped.is_set() or gateway_id in self.runtimes or gateway_id in self._starting:
                 return False
+            if gateway_id in self._stopping:
+                logger.warning(
+                    "not starting mailbox %s: its previous runtime is still stopping", gateway_id
+                )
+                return False
             lingering = self._lingering.get(gateway_id)
             if lingering is not None:
                 if lingering.is_alive:
@@ -309,14 +322,23 @@ class HostedController:
         """Stops a mailbox's runtime. `forget` also deletes its local state once it is dead."""
         with self._lock:
             runtime = self.runtimes.pop(gateway_id, None)
+            if runtime is not None:
+                # Marked in the same critical section as the pop: there is no moment at which the
+                # id is in no collection while its threads may still be running.
+                self._stopping[gateway_id] = runtime
         if runtime is not None:
-            runtime.stop()
+            try:
+                runtime.stop()
+            finally:
+                with self._lock:
+                    if self._stopping.get(gateway_id) is runtime:
+                        del self._stopping[gateway_id]
+                    if runtime.is_alive:
+                        self._lingering[gateway_id] = runtime
             if runtime.is_alive:
                 logger.warning(
                     "mailbox %s did not stop in time; its threads are still running", gateway_id
                 )
-                with self._lock:
-                    self._lingering[gateway_id] = runtime
         if forget:
             self._forget_state(gateway_id)
 
@@ -331,6 +353,7 @@ class HostedController:
             if (
                 gateway_id in self.runtimes
                 or gateway_id in self._starting
+                or gateway_id in self._stopping
                 or (lingering is not None and lingering.is_alive)
             ):
                 self._purge_pending.add(gateway_id)
@@ -395,11 +418,14 @@ class HostedController:
             )
             if self._stopped.is_set():
                 return  # stopped while the list was in flight: start nothing
-            self._drop(gateway_id)
+            nothing_to_run = (
+                registration is None or str(registration.get("status", "")).lower() == REVOKED
+            )
+            self._drop(gateway_id, forget=nothing_to_run)
             with self._lock:
                 self._halted.discard(gateway_id)
                 self._pending_restart.discard(gateway_id)
-                if registration is None or str(registration.get("status", "")).lower() == REVOKED:
+                if registration is None or nothing_to_run:
                     logger.info("nothing to start for mailbox %s (gone or revoked)", gateway_id)
                     return
                 if len(self.runtimes) >= MAX_MAILBOXES:

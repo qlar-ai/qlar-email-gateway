@@ -742,3 +742,87 @@ def test_one_runtime_failing_to_signal_does_not_stop_signalling_the_rest(tmp_pat
 
 def test_probe_timeout_is_under_messengers_30_second_wait():
     assert PROBE_TIMEOUT_SECONDS == 25.0
+
+
+# -- last fix: no second runtime while the first is still stopping ---------------------------------
+
+
+class BlockingStopRuntime(FakeRuntime):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def stop(self):
+        self.request_stop()
+        BlockingStopRuntime.entered.set()
+        BlockingStopRuntime.release.wait(10)
+        self.alive = False
+        self.drop_credentials()
+        self.events.append("stopped")
+
+
+def test_start_is_refused_while_the_previous_runtime_is_still_stopping(tmp_path):
+    BlockingStopRuntime.entered, BlockingStopRuntime.release = threading.Event(), threading.Event()
+    controller = make_controller(FakeControl([row("a")]), tmp_path)
+    controller._runtime_factory = BlockingStopRuntime
+    controller.reconcile_once()
+    dropper = threading.Thread(target=controller._drop, args=("a",))
+    dropper.start()
+    assert BlockingStopRuntime.entered.wait(5)
+
+    refused = controller._start(row("a"))
+
+    assert refused is False
+    assert len(FakeRuntime.created) == 1
+    BlockingStopRuntime.release.set()
+    dropper.join(5)
+    assert controller._start(row("a")) is True
+    assert len(FakeRuntime.created) == 2 and FakeRuntime.created[1].alive
+
+
+def test_state_purge_waits_while_the_runtime_is_stopping(tmp_path):
+    BlockingStopRuntime.entered, BlockingStopRuntime.release = threading.Event(), threading.Event()
+    controller = make_controller(FakeControl([row("a")]), tmp_path)
+    controller._runtime_factory = BlockingStopRuntime
+    controller.reconcile_once()
+    state = make_state(tmp_path, "a")
+    dropper = threading.Thread(target=controller._drop, args=("a",))
+    dropper.start()
+    assert BlockingStopRuntime.entered.wait(5)
+
+    controller._forget_state("a")
+    assert state.exists()
+    BlockingStopRuntime.release.set()
+    dropper.join(5)
+    controller._retry_state_purges({})
+
+    assert not state.exists()
+
+
+def test_halted_revoked_mailbox_state_is_deleted_when_its_row_leaves_the_list(tmp_path):
+    control = FakeControl([row("a")])
+    controller = make_controller(control, tmp_path)
+    controller.reconcile_once()
+    state = make_state(tmp_path, "a")
+    runtime = FakeRuntime.created[0]
+    runtime.alive, runtime.stopped_by = False, "revoked"
+    controller.reconcile_once()
+    assert "a" in controller._halted and state.exists()
+
+    control.rows = []
+    controller.reconcile_once()
+
+    assert not state.exists() and controller._halted == set()
+
+
+@pytest.mark.parametrize("rows", [[], [row("a", status="revoked")]])
+def test_restart_of_a_gone_or_revoked_mailbox_deletes_its_state(tmp_path, rows):
+    control = FakeControl([row("a")])
+    controller = make_controller(control, tmp_path)
+    controller.reconcile_once()
+    state = make_state(tmp_path, "a")
+    control.rows = rows
+
+    controller.handle_command({"id": "c1", "type": "configure", "gatewayId": "a"})
+
+    assert not state.exists()
+    assert "a" not in controller.runtimes
