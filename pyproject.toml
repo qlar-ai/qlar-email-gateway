@@ -32,9 +32,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6"]
+# Qlar-run hosted worker only; never installed on a customer premises.
+hosted = ["azure-identity>=1.17", "azure-keyvault-secrets>=4.8"]
 
 [project.scripts]
 qlar-email-gateway = "qlar_email_gateway.cli:main"
+qlar-email-hosted-worker = "qlar_email_gateway.hosted.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/qlar-ai/qlar-email-gateway"
