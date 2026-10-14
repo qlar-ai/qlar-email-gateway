@@ -28,11 +28,20 @@ Mount a volume at `/state`. Each mailbox gets its own folder named by its gatewa
 /state/{gatewayId}/audit/mail.jsonl       local audit log
 ```
 
+When a mailbox is removed (a `remove` command, or its registration is revoked or no longer
+listed), the worker stops it and then deletes its whole `/state/{gatewayId}` folder, private key and
+audit log included, once its threads are confirmed dead. If Qlar answers `unknown_gateway` for a
+mailbox it still lists as live (its key was dropped, for example by a re-key), the worker deletes
+that folder and enrols the mailbox again instead of halting it.
+
 ## Control plane
 
 The worker reads the list of hosted registrations (`GET /hosted/registrations`), long-polls for
-commands (test credentials, re-key, and registration changes) and posts each result back. A
-re-key issues a fresh enrolment code that the worker redeems itself; nothing prompts.
+commands (`configure`, `refresh_credentials`, `remove`, `test_credentials`) with
+`{"maxWaitSeconds": 25}`, and posts each credentials-test result back. A re-key is not a command:
+when the worker finds a mailbox that Qlar lists as enrolled but that has no local key, it calls
+`POST /hosted/registrations/{gatewayId}/rekey` itself and redeems the fresh enrolment code it gets
+back; nothing prompts.
 
 ## Key Vault access
 
@@ -41,14 +50,16 @@ scoped to the vault). It never lists, sets or deletes secrets.
 
 ## Operating rules
 
-- **One instance in v1.** Run exactly one worker with `MAX_MAILBOXES=200` (a fixed limit in the
-  code; registrations beyond it are not served). Two instances against the same registrations
+- **One instance in v1.** Run exactly one worker. It serves at most 200 mailboxes: `MAX_MAILBOXES`
+  is a constant in the code, not an environment variable; registrations beyond it are not served. Two instances against the same registrations
   would invalidate each other's enrolment codes.
 - **A 401 or 403 from the control plane stops the worker with exit code 1.** Rotating
   `QLAR_WORKER_API_KEY` therefore needs an ordering: set the new key on the control plane side,
   then restart the worker with it. Until restarted, the old key makes the worker stop.
-- **Stop timeout.** On SIGTERM/SIGINT the worker shuts down within about 25 seconds; set the
-  orchestrator's stop grace period above that.
+- **Stop timeout.** On SIGTERM/SIGINT the worker's shutdown is bounded by a shared deadline of
+  ~25 s for all mailboxes, plus any in-flight SMTP send (up to 30 s). Set the orchestrator's stop
+  grace period above that: `--stop-timeout 60` for Docker, `WEBSITES_CONTAINER_STOP_TIME_LIMIT=60`
+  on App Service.
 
 ## Run
 
@@ -56,5 +67,5 @@ scoped to the vault). It never lists, sets or deletes secrets.
 docker run -d --name email-hosted-worker -v email-hosted-state:/state \
   -e QLAR_BASE_URL=https://example.invalid/api/email-gateway \
   -e QLAR_WORKER_API_KEY=... -e KEY_VAULT_URI=https://example.vault.azure.net \
-  --stop-timeout 40 ghcr.io/qlar-ai/email-hosted-worker:latest
+  --stop-timeout 60 ghcr.io/qlar-ai/email-hosted-worker:latest
 ```
