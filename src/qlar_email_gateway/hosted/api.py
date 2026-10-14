@@ -24,6 +24,14 @@ class ControlPlaneUnreachable(Exception):
     """The control plane could not be reached, or answered with a server error."""
 
 
+class ControlPlaneRejected(Exception):
+    """The control plane refused a request with a 4xx other than 401/403 (not found, bad request)."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"HTTP {status}: {message}")
+        self.status = status
+
+
 class ControlPlaneClient:
     def __init__(
         self,
@@ -72,5 +80,6 @@ class ControlPlaneClient:
             )
         if response.status_code >= 500:
             raise ControlPlaneUnreachable(f"HTTP {response.status_code} from {path}")
-        response.raise_for_status()
+        if response.status_code >= 400:
+            raise ControlPlaneRejected(response.status_code, f"{method} {path}")
         return response

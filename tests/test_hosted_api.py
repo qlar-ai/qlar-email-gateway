@@ -4,6 +4,7 @@ import pytest
 from qlar_email_gateway.hosted.api import (
     ControlPlaneAuthError,
     ControlPlaneClient,
+    ControlPlaneRejected,
     ControlPlaneUnreachable,
 )
 
@@ -86,3 +87,13 @@ def test_connection_error_raises_unreachable():
 
     with pytest.raises(ControlPlaneUnreachable):
         make_client(handler).poll()
+
+
+def test_other_client_errors_raise_rejected_not_raw_httpx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "gateway not found"})
+
+    with pytest.raises(ControlPlaneRejected) as caught:
+        make_client(handler).rekey("egw_x")
+
+    assert caught.value.status == 404
