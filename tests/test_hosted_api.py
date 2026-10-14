@@ -1,7 +1,11 @@
+import json
+
 import httpx
 import pytest
 
 from qlar_email_gateway.hosted.api import (
+    POLL_TIMEOUT_SECONDS,
+    POLL_WAIT_SECONDS,
     ControlPlaneAuthError,
     ControlPlaneClient,
     ControlPlaneRejected,
@@ -33,6 +37,22 @@ def test_poll_204_is_none():
     client = make_client(lambda request: httpx.Response(204))
 
     assert client.poll() is None
+
+
+def test_poll_asks_for_the_full_25_second_long_poll():
+    # Contract with Messenger-BE: an explicit wait, so the server never falls back to a short one.
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(204)
+
+    make_client(handler).poll()
+
+    assert seen["url"] == "https://q/api/email-gateway/hosted/poll"
+    assert seen["body"] == {"maxWaitSeconds": 25}
+    assert POLL_WAIT_SECONDS == 25 and POLL_TIMEOUT_SECONDS > POLL_WAIT_SECONDS
 
 
 def test_poll_returns_command_object():

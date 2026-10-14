@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
 
 from ..config import MailSettings
@@ -60,11 +61,25 @@ def _security(value: Any, name: str) -> Any:
     return lowered
 
 
-def fetch_mail_settings(vault_uri: str, secret_name: str) -> MailSettings:
-    # Imported here so a base (on-prem) install, which lacks the `hosted` extra, never needs them.
-    from azure.identity import DefaultAzureCredential
-    from azure.keyvault.secrets import SecretClient
+#: One SecretClient (and so one DefaultAzureCredential and its token cache) per vault, shared by
+#: every mailbox: a fresh credential per read would fetch a new managed-identity token every time.
+_clients: dict[str, Any] = {}
+_clients_lock = threading.Lock()
 
-    client = SecretClient(vault_url=vault_uri, credential=DefaultAzureCredential())
-    secret = client.get_secret(secret_name)
+
+def _secret_client(vault_uri: str) -> Any:
+    with _clients_lock:
+        client = _clients.get(vault_uri)
+        if client is None:
+            # Imported here so a base (on-prem) install, which lacks the `hosted` extra, never needs them.
+            from azure.identity import DefaultAzureCredential
+            from azure.keyvault.secrets import SecretClient
+
+            client = SecretClient(vault_url=vault_uri, credential=DefaultAzureCredential())
+            _clients[vault_uri] = client
+        return client
+
+
+def fetch_mail_settings(vault_uri: str, secret_name: str) -> MailSettings:
+    secret = _secret_client(vault_uri).get_secret(secret_name)
     return parse_mail_settings(secret.value or "")

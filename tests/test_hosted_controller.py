@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -10,7 +11,11 @@ from qlar_email_gateway.hosted.api import (
     ControlPlaneRejected,
     ControlPlaneUnreachable,
 )
-from qlar_email_gateway.hosted.controller import MAX_MAILBOXES, HostedController
+from qlar_email_gateway.hosted.controller import (
+    MAX_MAILBOXES,
+    PROBE_TIMEOUT_SECONDS,
+    HostedController,
+)
 from qlar_email_gateway.hosted.credentials import CredentialFormatError
 from qlar_email_gateway.mailbox import MailboxError
 
@@ -147,19 +152,51 @@ def test_revoked_registration_is_stopped_and_not_restarted(tmp_path):
     assert len(FakeRuntime.created) == 1
 
 
-def test_runtime_stopped_by_deletion_is_dropped_and_not_reenrolled_while_listed(tmp_path):
+def make_state(tmp_path, gateway_id):
+    folder = tmp_path / gateway_id
+    (folder / "audit").mkdir(parents=True)
+    (folder / "gateway-key.pem").write_text("PRIVATE")
+    (folder / "gateway-state.json").write_text("{}")
+    (folder / "audit" / "mail.jsonl").write_text("{}\n")
+    return folder
+
+
+def test_runtime_stopped_by_deletion_while_still_listed_wipes_state_and_reenrols(tmp_path):
+    # Qlar answered unknown_gateway (no key held), yet still lists the mailbox as hosted and live:
+    # a rekey or a lost update. Halting forever would strand it; enrol again from a clean state.
     control = FakeControl([row("a")])
     controller = make_controller(control, tmp_path)
     controller.reconcile_once()
+    state = make_state(tmp_path, "a")
     runtime = FakeRuntime.created[0]
     runtime.alive, runtime.stopped_by = False, "deleted"
+    control.rows = [row("a", status="provisioning", enrolled=False, code="CODE-NEW1")]
+
+    controller.reconcile_once()
+
+    assert runtime.mail is None  # credentials dropped
+    assert not state.exists()
+    assert len(FakeRuntime.created) == 2
+    fresh = FakeRuntime.created[1]
+    assert fresh.alive and fresh.registration["enrollmentCode"] == "CODE-NEW1"
+    assert fresh.events == ["enrolled", "started"]
+    assert controller._halted == set()
+
+
+def test_runtime_stopped_as_revoked_while_listed_is_halted(tmp_path):
+    control = FakeControl([row("a")])
+    controller = make_controller(control, tmp_path)
+    controller.reconcile_once()
+    state = make_state(tmp_path, "a")
+    runtime = FakeRuntime.created[0]
+    runtime.alive, runtime.stopped_by = False, "revoked"
 
     controller.reconcile_once()
     controller.reconcile_once()
 
     assert len(FakeRuntime.created) == 1
-    assert runtime.mail is None  # credentials dropped
-    assert "a" not in controller.runtimes
+    assert "a" not in controller.runtimes and "a" in controller._halted
+    assert state.exists()  # left for the revoked row's removal
 
     # Once the server stops listing it, and later lists it again, it may start afresh.
     control.rows = []
@@ -167,6 +204,64 @@ def test_runtime_stopped_by_deletion_is_dropped_and_not_reenrolled_while_listed(
     control.rows = [row("a")]
     controller.reconcile_once()
     assert len(FakeRuntime.created) == 2
+
+
+def test_remove_command_logs_and_deletes_the_mailbox_state(tmp_path, caplog):
+    controller = make_controller(FakeControl([row("a"), row("b")]), tmp_path)
+    controller.reconcile_once()
+    state_a, state_b = make_state(tmp_path, "a"), make_state(tmp_path, "b")
+
+    with caplog.at_level(logging.INFO):
+        controller.handle_command({"id": "c1", "type": "remove", "gatewayId": "a"})
+
+    assert "a" not in controller.runtimes
+    assert not state_a.exists() and state_b.exists()
+    assert any(
+        r.getMessage() == "mailbox a is gone or revoked; stopping it" for r in caplog.records
+    )
+
+
+def test_revoked_or_deleted_registration_drop_deletes_its_state(tmp_path):
+    control = FakeControl([row("a"), row("b"), row("c")])
+    controller = make_controller(control, tmp_path)
+    controller.reconcile_once()
+    states = {g: make_state(tmp_path, g) for g in ("a", "b", "c")}
+
+    control.rows = [row("a", status="revoked"), row("c")]  # a revoked, b deleted
+    controller.reconcile_once()
+
+    assert not states["a"].exists() and not states["b"].exists()
+    assert states["c"].exists()
+
+
+def test_state_of_a_runtime_that_will_not_die_is_deleted_only_once_it_is_dead(tmp_path):
+    control = FakeControl([row("a")])
+    controller = make_controller(control, tmp_path)
+    controller._runtime_factory = StubbornRuntime
+    controller.reconcile_once()
+    stubborn = FakeRuntime.created[0]
+    state = make_state(tmp_path, "a")
+
+    control.rows = []
+    controller.reconcile_once()
+    assert state.exists()  # its threads may still write there
+
+    stubborn.alive = False
+    controller.reconcile_once()
+    assert not state.exists()
+
+
+def test_remove_never_deletes_outside_the_state_directory(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    controller = make_controller(FakeControl(), state_dir)
+
+    controller.handle_command({"id": "c1", "type": "remove", "gatewayId": "../precious"})
+    controller.handle_command({"id": "c2", "type": "remove", "gatewayId": ""})
+
+    assert outside.exists() and state_dir.exists()
 
 
 def test_runtime_that_died_without_a_stop_reason_is_restarted(tmp_path):
@@ -554,3 +649,96 @@ def test_runtime_that_will_not_die_blocks_a_new_one_for_the_same_id(tmp_path, ca
     stubborn.alive = False
     controller.reconcile_once()
     assert len(FakeRuntime.created) == 2
+
+
+# -- final review: stop and the lock ---------------------------------------------------------------
+
+
+def test_stop_during_an_in_flight_list_starts_nothing(tmp_path):
+    holder = {}
+
+    class StoppingControl(FakeControl):
+        def list_registrations(self):
+            rows = super().list_registrations()
+            holder["controller"].stop()  # SIGTERM lands while the list is on the wire
+            return rows
+
+    controller = make_controller(StoppingControl([row("a"), row("b")]), tmp_path)
+    holder["controller"] = controller
+
+    controller.reconcile_once()
+    controller.handle_command({"id": "c1", "type": "configure", "gatewayId": "a"})
+
+    assert FakeRuntime.created == []
+    assert controller.runtimes == {}
+
+
+def test_stop_during_enrolment_never_starts_that_runtime(tmp_path):
+    holder = {}
+
+    class StopWhileEnrolling(FakeRuntime):
+        def ensure_enrolled(self):
+            super().ensure_enrolled()
+            holder["controller"].stop()
+
+    controller = make_controller(FakeControl([row("a"), row("b")]), tmp_path)
+    controller._runtime_factory = StopWhileEnrolling
+    holder["controller"] = controller
+
+    controller.reconcile_once()
+
+    assert len(FakeRuntime.created) == 1  # the loop also stops trying the next mailbox
+    assert "started" not in FakeRuntime.created[0].events
+    assert controller.runtimes == {}
+
+
+def test_stop_during_a_long_start_loop_returns_within_the_shared_deadline(tmp_path):
+    fetching = threading.Event()
+
+    def slow_fetch(vault_uri, secret_name):
+        fetching.set()
+        time.sleep(0.2)
+        return fake_fetch(vault_uri, secret_name)
+
+    rows = [row(f"g{i:02d}") for i in range(30)]  # 6 s of vault reads in a row
+    controller = make_controller(FakeControl(rows), tmp_path, fetch=slow_fetch, shutdown_seconds=1.0)
+    thread = threading.Thread(target=controller.run_forever)
+    thread.start()
+    assert fetching.wait(5)
+    time.sleep(0.5)  # a few mailboxes are already running
+
+    began = time.monotonic()
+    controller.stop()
+    thread.join(timeout=10)
+    elapsed = time.monotonic() - began
+
+    assert not thread.is_alive()
+    assert elapsed < 1.5, f"shutdown took {elapsed:.1f}s; the start loop held it up"
+    time.sleep(0.5)  # let the start in flight finish: it must not leave a runtime running
+    assert running(controller) == set()
+    assert controller.runtimes == {}
+    assert len(FakeRuntime.created) < len(rows)
+
+
+def test_one_runtime_failing_to_signal_does_not_stop_signalling_the_rest(tmp_path, caplog):
+    class BrokenSignal(FakeRuntime):
+        def request_stop(self):
+            if self.gateway_id == "a":
+                raise RuntimeError("socket already closed")
+            super().request_stop()
+
+    controller = make_controller(FakeControl([row("a"), row("b"), row("c")]), tmp_path)
+    controller._runtime_factory = BrokenSignal
+    controller.reconcile_once()
+
+    with caplog.at_level(logging.WARNING):
+        controller._shutdown_runtimes()
+
+    others = [r for r in FakeRuntime.created if r.gateway_id != "a"]
+    assert all("request_stop" in r.events for r in others)
+    assert controller.runtimes == {}
+    assert any("a" in r.getMessage() and "RuntimeError" in r.getMessage() for r in caplog.records)
+
+
+def test_probe_timeout_is_under_messengers_30_second_wait():
+    assert PROBE_TIMEOUT_SECONDS == 25.0

@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+#: How long the server holds a quiet poll. Sent explicitly: the server's maximum, under APIM's 30 s.
+POLL_WAIT_SECONDS = 25
 #: Longer than the server's 25 s long-poll so the server, not this client, ends a quiet wait.
 POLL_TIMEOUT_SECONDS = 40.0
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -54,7 +56,12 @@ class ControlPlaneClient:
         return list(response.json().get("registrations") or [])
 
     def poll(self) -> dict[str, Any] | None:
-        response = self._send("POST", "/hosted/poll", json={}, timeout=POLL_TIMEOUT_SECONDS)
+        response = self._send(
+            "POST",
+            "/hosted/poll",
+            json={"maxWaitSeconds": POLL_WAIT_SECONDS},
+            timeout=POLL_TIMEOUT_SECONDS,
+        )
         if response.status_code == 204:
             return None
         return response.json().get("command")
