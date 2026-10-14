@@ -66,9 +66,20 @@ class FakeRuntime:
     def start(self):
         self.events.append("started")
 
-    def stop(self):
+    def request_stop(self):
+        self.events.append("request_stop")
+
+    def join(self, timeout):
+        self.events.append("join")
         self.alive = False
+
+    def drop_credentials(self):
         self.mail = None
+
+    def stop(self):
+        self.request_stop()
+        self.join(10)
+        self.drop_credentials()
         self.events.append("stopped")
 
     @property
@@ -268,7 +279,7 @@ def run_test_credentials(tmp_path, credentials, tester):
     control = FakeControl()
     controller = make_controller(control, tmp_path, mailbox_tester=tester)
     controller.handle_command({"id": "ctl_1", "type": "test_credentials", "credentials": credentials})
-    controller._executor.shutdown(wait=True)
+    controller._probe_executor.shutdown(wait=True)
     return control.results
 
 
@@ -384,3 +395,162 @@ def test_shared_executor_is_a_pool(tmp_path):
     controller = make_controller(FakeControl(), tmp_path)
 
     assert isinstance(controller._executor, ThreadPoolExecutor)
+
+
+# -- fix round 1 ---------------------------------------------------------------------------------
+
+
+class SlowRuntime(FakeRuntime):
+    clock = None
+
+    def request_stop(self):
+        self.events.append("request_stop")
+
+    def join(self, timeout):
+        # Each join would burn its whole allowance; the shared deadline must cut the total.
+        self.events.append(f"join:{timeout}")
+        SlowRuntime.clock[0] += max(timeout, 0)
+
+    def stop(self):
+        self.request_stop()
+        self.join(10)
+        self.drop_credentials()
+
+
+def test_shutdown_signals_all_first_then_joins_against_one_deadline(tmp_path, caplog):
+    now = [0.0]
+    SlowRuntime.clock = now
+    rows = [row(f"g{i}") for i in range(10)]
+    controller = make_controller(
+        FakeControl(rows), tmp_path, clock=lambda: now[0], shutdown_seconds=25.0
+    )
+    controller._runtime_factory = SlowRuntime
+    controller.reconcile_once()
+    runtimes = list(SlowRuntime.created)
+    assert len(runtimes) == 10
+    for runtime in runtimes:
+        runtime.events.clear()
+    start = now[0]
+
+    with caplog.at_level(logging.WARNING):
+        controller._shutdown_runtimes()
+
+    assert now[0] - start <= 25.0
+    assert all(r.events[0] == "request_stop" for r in runtimes)
+    assert all(r.mail is None for r in runtimes)
+    assert any("10 of 10" in r.getMessage() for r in caplog.records)
+    assert controller.runtimes == {}
+
+
+def test_refresh_credentials_lost_list_is_applied_by_next_reconcile(tmp_path):
+    control = FakeControl([row("a")])
+    fetches = []
+
+    def fetch(vault_uri, secret_name):
+        fetches.append(secret_name)
+        return fake_fetch(vault_uri, secret_name)
+
+    controller = make_controller(control, tmp_path, fetch=fetch)
+    controller.reconcile_once()
+    assert len(fetches) == 1
+
+    calls = {"n": 0}
+    real = control.list_registrations
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ControlPlaneUnreachable("down")
+        return real()
+
+    control.list_registrations = flaky
+
+    controller.handle_command({"id": "c1", "type": "refresh_credentials", "gatewayId": "a"})
+    assert len(FakeRuntime.created) == 1 and FakeRuntime.created[0].alive  # old one untouched
+
+    controller.reconcile_once()
+
+    assert len(fetches) == 2
+    assert FakeRuntime.created[0].events[-1] == "stopped"
+    assert len(FakeRuntime.created) == 2 and FakeRuntime.created[1].alive
+    assert controller._pending_restart == set()
+
+    controller.reconcile_once()
+    assert len(FakeRuntime.created) == 2  # applied once only
+
+
+def test_probe_runs_on_the_probe_pool_not_the_job_pool(tmp_path):
+    names = []
+
+    def tester(settings):
+        names.append(threading.current_thread().name)
+        return {}
+
+    run_test_credentials(tmp_path, GOOD_CREDENTIALS, tester)
+
+    assert names and names[0].startswith("qlar-probe")
+
+
+def test_probe_that_hangs_posts_a_timeout_error_once(tmp_path):
+    release = threading.Event()
+
+    def tester(settings):
+        release.wait(5)
+        return {"imapBanner": "late"}
+
+    control = FakeControl()
+    controller = make_controller(control, tmp_path, mailbox_tester=tester, probe_timeout_seconds=0.1)
+    controller.handle_command({"id": "ctl_1", "type": "test_credentials", "credentials": GOOD_CREDENTIALS})
+    for _ in range(100):
+        if control.results:
+            break
+        threading.Event().wait(0.05)
+    release.set()
+    controller._probe_executor.shutdown(wait=True)
+
+    assert len(control.results) == 1
+    payload = control.results[0][1]
+    assert payload["status"] == "error" and payload["error"]["category"] == "timeout"
+    assert payload["error"]["messageText"]
+
+
+def test_probe_without_an_id_posts_nothing(tmp_path, caplog):
+    control = FakeControl()
+    controller = make_controller(control, tmp_path, mailbox_tester=lambda s: {})
+
+    with caplog.at_level(logging.ERROR):
+        controller.handle_command({"type": "test_credentials", "credentials": GOOD_CREDENTIALS})
+    controller._probe_executor.shutdown(wait=True)
+
+    assert control.results == []
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+class StubbornRuntime(FakeRuntime):
+    def stop(self):
+        self.drop_credentials()  # threads refuse to die
+
+    @property
+    def is_alive(self):
+        return self.alive
+
+
+def test_runtime_that_will_not_die_blocks_a_new_one_for_the_same_id(tmp_path, caplog):
+    control = FakeControl([row("a")])
+    controller = make_controller(control, tmp_path)
+    controller._runtime_factory = StubbornRuntime
+    controller.reconcile_once()
+    stubborn = FakeRuntime.created[0]
+
+    with caplog.at_level(logging.WARNING):
+        controller.handle_command({"id": "c1", "type": "refresh_credentials", "gatewayId": "a"})
+
+    assert len(FakeRuntime.created) == 1  # refused: old threads still alive
+    assert any("a" in r.getMessage() and "did not stop" in r.getMessage() for r in caplog.records)
+
+    controller.reconcile_once()
+    assert len(FakeRuntime.created) == 1
+
+    stubborn.alive = False
+    controller.reconcile_once()
+    assert len(FakeRuntime.created) == 2

@@ -34,6 +34,10 @@ logger = logging.getLogger("qlar_email_gateway.hosted.controller")
 RECONCILE_SECONDS = 30
 MAX_MAILBOXES = 200
 EXECUTOR_WORKERS = 8
+PROBE_WORKERS = 2
+#: One deadline for the whole shutdown, under a container's usual 30 s stop timeout.
+SHUTDOWN_JOIN_SECONDS = 25.0
+PROBE_TIMEOUT_SECONDS = 40.0
 MIN_BACKOFF_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 15.0
 
@@ -51,6 +55,9 @@ class HostedController:
         fetch_credentials: Callable[[str, str], MailSettings] = fetch_mail_settings,
         runtime_factory: Callable[..., Any] = MailboxRuntime,
         mailbox_tester: Callable[[Settings], dict[str, Any]] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        shutdown_seconds: float = SHUTDOWN_JOIN_SECONDS,
+        probe_timeout_seconds: float = PROBE_TIMEOUT_SECONDS,
     ) -> None:
         self._control = control
         self._vault_uri = vault_uri
@@ -60,7 +67,20 @@ class HostedController:
         self._runtime_factory = runtime_factory
         self._mailbox_tester = mailbox_tester
         self._executor = ThreadPoolExecutor(max_workers=EXECUTOR_WORKERS, thread_name_prefix="qlar-job")
+        self._clock = clock
+        self._shutdown_seconds = shutdown_seconds
+        self._probe_timeout_seconds = probe_timeout_seconds
+        # Credential probes take as long as a customer's mail server does; on their own small pool
+        # they cannot hold up the jobs of the running mailboxes.
+        self._probe_executor = ThreadPoolExecutor(
+            max_workers=PROBE_WORKERS, thread_name_prefix="qlar-probe"
+        )
         self.runtimes: dict[str, Any] = {}
+        #: Runtimes that outlived their stop request: their state file is still in use, so no new
+        #: runtime for the same id may start until they are dead.
+        self._lingering: dict[str, Any] = {}
+        #: configure/refresh commands that could not be applied yet; the next reconcile does it.
+        self._pending_restart: set[str] = set()
         #: Mailboxes whose runtime Qlar stopped (deleted/revoked) while they were still listed:
         #: left alone until they leave the list, so a disagreement never becomes a re-enrol loop.
         self._halted: set[str] = set()
@@ -82,14 +102,34 @@ class HostedController:
         self._stopped.wait()
 
         with self._lock:
-            for gateway_id in list(self.runtimes):
-                self._drop(gateway_id)
+            self._shutdown_runtimes()
+        self._probe_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=True, cancel_futures=True)
         if self.fatal is not None:
             raise self.fatal
 
     def stop(self) -> None:
         self._stopped.set()
+
+    def _shutdown_runtimes(self) -> None:
+        """Tells every runtime to stop at once, then waits for all of them against one deadline."""
+        runtimes = list(self.runtimes.values())
+        for runtime in runtimes:
+            runtime.request_stop()
+
+        deadline = self._clock() + self._shutdown_seconds
+        for runtime in runtimes:
+            runtime.join(max(0.0, deadline - self._clock()))
+            runtime.drop_credentials()
+        self.runtimes.clear()
+
+        alive = sum(1 for runtime in runtimes if runtime.is_alive)
+        if alive:
+            logger.warning(
+                "%d of %d mailbox runtimes were still running at the shutdown deadline",
+                alive,
+                len(runtimes),
+            )
 
     # -- reconcile -----------------------------------------------------------------------------
 
@@ -103,6 +143,15 @@ class HostedController:
                 logger.info("mailbox %s is gone or revoked; stopping it", gateway_id)
                 self._drop(gateway_id)
             self._halted &= desired.keys()
+            self._pending_restart &= desired.keys()
+
+            attempted: set[str] = set()
+            for gateway_id in sorted(self._pending_restart):
+                self._drop(gateway_id)
+                self._halted.discard(gateway_id)
+                attempted.add(gateway_id)
+                if self._start(desired[gateway_id]):
+                    self._pending_restart.discard(gateway_id)
 
             for gateway_id, runtime in list(self.runtimes.items()):
                 if runtime.is_alive:
@@ -116,7 +165,11 @@ class HostedController:
                     logger.warning("mailbox %s stopped unexpectedly; restarting it", gateway_id)
 
             for gateway_id, registration in desired.items():
-                if gateway_id not in self.runtimes and gateway_id not in self._halted:
+                if (
+                    gateway_id not in self.runtimes
+                    and gateway_id not in self._halted
+                    and gateway_id not in attempted
+                ):
                     self._start(registration)
 
     def _desired(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -136,6 +189,14 @@ class HostedController:
 
     def _start(self, registration: dict[str, Any]) -> bool:
         gateway_id = str(registration["gatewayId"])
+        lingering = self._lingering.get(gateway_id)
+        if lingering is not None:
+            if lingering.is_alive:
+                logger.warning(
+                    "not starting mailbox %s: its previous runtime is still shutting down", gateway_id
+                )
+                return False
+            del self._lingering[gateway_id]
         try:
             mail = self._fetch_credentials(self._vault_uri, str(registration.get("secretName") or ""))
         except CredentialFormatError as error:
@@ -169,6 +230,11 @@ class HostedController:
         runtime = self.runtimes.pop(gateway_id, None)
         if runtime is not None:
             runtime.stop()
+            if runtime.is_alive:
+                logger.warning(
+                    "mailbox %s did not stop in time; its threads are still running", gateway_id
+                )
+                self._lingering[gateway_id] = runtime
 
     # -- commands ------------------------------------------------------------------------------
 
@@ -183,49 +249,92 @@ class HostedController:
                 self._drop(gateway_id)
                 self._halted.discard(gateway_id)
         elif kind == "test_credentials":
-            self._executor.submit(self._test_credentials, cmd)
+            self._start_probe(cmd)
         else:
             logger.warning("ignoring unknown control command %r", kind)
 
     def _restart(self, gateway_id: str) -> None:
-        registration = next(
-            (r for r in self._control.list_registrations() if str(r.get("gatewayId")) == gateway_id),
-            None,
-        )
-        with self._lock:
-            self._drop(gateway_id)
-            self._halted.discard(gateway_id)
-            if registration is None or str(registration.get("status", "")).lower() == REVOKED:
-                logger.info("nothing to start for mailbox %s (gone or revoked)", gateway_id)
-                return
-            if len(self.runtimes) >= MAX_MAILBOXES:
-                logger.error(
-                    "not starting mailbox %s: the worker already serves %d", gateway_id, MAX_MAILBOXES
-                )
-                return
-            self._start(registration)
+        try:
+            registration = next(
+                (r for r in self._control.list_registrations() if str(r.get("gatewayId")) == gateway_id),
+                None,
+            )
+            with self._lock:
+                self._drop(gateway_id)
+                self._halted.discard(gateway_id)
+                self._pending_restart.discard(gateway_id)
+                if registration is None or str(registration.get("status", "")).lower() == REVOKED:
+                    logger.info("nothing to start for mailbox %s (gone or revoked)", gateway_id)
+                    return
+                if len(self.runtimes) >= MAX_MAILBOXES:
+                    logger.error(
+                        "not starting mailbox %s: the worker already serves %d", gateway_id, MAX_MAILBOXES
+                    )
+                    return
+                if not self._start(registration):
+                    self._pending_restart.add(gateway_id)
+        except Exception as error:  # noqa: BLE001 - the command is already consumed; reconcile finishes it
+            logger.warning(
+                "could not apply the restart of mailbox %s now (%s); the next reconcile will",
+                gateway_id,
+                type(error).__name__,
+            )
+            with self._lock:
+                self._pending_restart.add(gateway_id)
 
-    def _test_credentials(self, cmd: dict[str, Any]) -> None:
+    def _start_probe(self, cmd: dict[str, Any]) -> None:
         control_id = str(cmd.get("id") or cmd.get("controlId") or "")
+        if not control_id:
+            logger.error("ignoring a credentials test command that carries no id")
+            return
+
+        guard = threading.Lock()
+        done = [False]
+
+        def post_once(payload: dict[str, Any]) -> None:
+            with guard:
+                if done[0]:
+                    return
+                done[0] = True
+            self._post_result(control_id, payload)
+
+        timer = threading.Timer(
+            self._probe_timeout_seconds,
+            post_once,
+            [_error("timeout", "probe_timeout", "the mail server did not answer in time")],
+        )
+        timer.daemon = True
+        timer.start()
+
+        def work() -> None:
+            try:
+                post_once(self._probe_payload(cmd, control_id))
+            finally:
+                timer.cancel()
+
+        self._probe_executor.submit(work)
+
+    def _probe_payload(self, cmd: dict[str, Any], control_id: str) -> dict[str, Any]:
         started = time.monotonic()
         tester = self._mailbox_tester or mailbox_module.test_mailbox
         try:
             mail = parse_mail_settings(json.dumps(cmd.get("credentials")))
             settings = build_settings("credentials-test", self._base_url, self._state_dir, mail, None)
             report = tester(settings)
-            payload: dict[str, Any] = {
+            return {
                 "status": "ok",
                 "durationMs": int((time.monotonic() - started) * 1000),
                 **report,
             }
         except CredentialFormatError as error:
-            payload = _error("rejected", "invalid_credentials", str(error))
+            return _error("rejected", "invalid_credentials", str(error))
         except (mailbox_module.MailboxError, SmtpSendError) as error:
-            payload = _error(error.category, str(getattr(error, "code", "")), str(error))
+            return _error(error.category, str(getattr(error, "code", "")), str(error))
         except Exception as error:  # noqa: BLE001 - the waiting caller must always get an answer
             logger.exception("credentials test %s failed unexpectedly", control_id)
-            payload = _error("internal", type(error).__name__, "the worker failed unexpectedly")
+            return _error("internal", type(error).__name__, "the worker failed unexpectedly")
 
+    def _post_result(self, control_id: str, payload: dict[str, Any]) -> None:
         try:
             self._control.post_result(control_id, payload)
         except Exception as error:  # noqa: BLE001 - the caller times out; nothing else to do

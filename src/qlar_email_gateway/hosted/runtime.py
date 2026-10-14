@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -169,17 +170,29 @@ class MailboxRuntime:
         for thread in self._threads:
             thread.start()
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
+        """Asks both loops to stop without waiting, so many runtimes can be told at once."""
         if self._watcher is not None:
             self._watcher.stop()
         if self._loop is not None:
             self._loop.stop()
+
+    def join(self, timeout: float) -> None:
+        """Waits up to `timeout` seconds in total for both threads to end."""
+        deadline = time.monotonic() + timeout
         for thread in self._threads:
             if thread is not threading.current_thread():
-                thread.join(timeout=JOIN_TIMEOUT_SECONDS)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    def drop_credentials(self) -> None:
         # Credentials are only ever held for as long as the mailbox is served.
         self.mail = None
         self.settings = None
+
+    def stop(self) -> None:
+        self.request_stop()
+        self.join(JOIN_TIMEOUT_SECONDS)
+        self.drop_credentials()
 
     @property
     def is_alive(self) -> bool:
