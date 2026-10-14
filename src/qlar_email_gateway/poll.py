@@ -80,6 +80,7 @@ class PollLoop:
         audit: AuditLog | None = None,
         sender: Callable[[MailSettings, dict[str, Any]], str] = send_reply,
         mailbox_tester: Callable[[Settings], dict[str, Any]] | None = None,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         self.settings = settings
         self.state = state
@@ -101,7 +102,12 @@ class PollLoop:
         self.stopped_by: Revoked | None = None
         self._in_flight = 0
         self._in_flight_lock = threading.Lock()
-        self._pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS, thread_name_prefix="qlar-job")
+        # A caller running many loops in one process (the hosted worker) hands in one shared pool;
+        # then this loop must not shut it down, and still waits for its own in-flight jobs.
+        self._owns_pool = executor is None
+        self._pool = executor or ThreadPoolExecutor(
+            max_workers=MAX_CONCURRENT_JOBS, thread_name_prefix="qlar-job"
+        )
 
     def stop(self) -> None:
         self._stopping.set()
@@ -170,7 +176,11 @@ class PollLoop:
                 self._sleep_with_jitter(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
 
-        self._pool.shutdown(wait=True, cancel_futures=False)
+        if self._owns_pool:
+            self._pool.shutdown(wait=True, cancel_futures=False)
+        else:
+            while self._current_in_flight() > 0:
+                time.sleep(0.05)
         logger.info("job loop stopped")
 
     def _poll_once(self) -> dict[str, Any] | None:

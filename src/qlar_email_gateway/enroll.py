@@ -53,6 +53,10 @@ class EnrollmentError(Exception):
     pass
 
 
+class EnrollmentCodeRejected(EnrollmentError):
+    """Qlar did not accept the code: used, expired, or replaced by a newer one."""
+
+
 def enroll(
     settings: Settings,
     idle_probe: Callable[[MailSettings], bool] = probe_idle,
@@ -131,7 +135,7 @@ def enroll(
         ) from wrong_address
     except QlarRejected as rejection:
         if rejection.status in (400, 404, 410):
-            raise EnrollmentError(
+            raise EnrollmentCodeRejected(
                 "Qlar rejected the enrolment code. Codes are single-use and expire after "
                 "15 minutes - generate a fresh one in the CMS and try again."
             ) from rejection
