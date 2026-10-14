@@ -1,0 +1,60 @@
+# Hosted worker
+
+`qlar-email-hosted-worker` is the Qlar-run process that serves every hosted mailbox. It is not
+for customer premises; there, use the [on-prem gateway](INSTALL.md). Image:
+`ghcr.io/qlar-ai/email-hosted-worker`, built from `Dockerfile.hosted`. It listens on no port.
+
+## Configuration
+
+Five environment variables and nothing else.
+
+| Variable | Required | Meaning | Default |
+|---|---|---|---|
+| `QLAR_BASE_URL` | yes | Control-plane base URL, ends in `/api/email-gateway`; must be `https://` outside local testing | — |
+| `QLAR_WORKER_API_KEY` | yes | Worker key, sent as `X-Internal-Api-Key` | — |
+| `KEY_VAULT_URI` | yes | Azure Key Vault holding the per-mailbox credential secrets | — |
+| `STATE_DIR` | no | Root of the per-mailbox state | `/state` |
+| `LOG_LEVEL` | no | Python log level | `INFO` |
+
+With a required variable missing the worker prints `missing required environment: ...` and exits 1.
+
+## State layout
+
+Mount a volume at `/state`. Each mailbox gets its own folder named by its gateway id:
+
+```
+/state/{gatewayId}/gateway-key.pem        identity key
+/state/{gatewayId}/gateway-state.json     enrolment and poll state
+/state/{gatewayId}/audit/mail.jsonl       local audit log
+```
+
+## Control plane
+
+The worker reads the list of hosted registrations (`GET /hosted/registrations`), long-polls for
+commands (test credentials, re-key, and registration changes) and posts each result back. A
+re-key issues a fresh enrolment code that the worker redeems itself; nothing prompts.
+
+## Key Vault access
+
+The worker's identity needs secret **get** only (for example the `Key Vault Secrets User` role
+scoped to the vault). It never lists, sets or deletes secrets.
+
+## Operating rules
+
+- **One instance in v1.** Run exactly one worker with `MAX_MAILBOXES=200` (a fixed limit in the
+  code; registrations beyond it are not served). Two instances against the same registrations
+  would invalidate each other's enrolment codes.
+- **A 401 or 403 from the control plane stops the worker with exit code 1.** Rotating
+  `QLAR_WORKER_API_KEY` therefore needs an ordering: set the new key on the control plane side,
+  then restart the worker with it. Until restarted, the old key makes the worker stop.
+- **Stop timeout.** On SIGTERM/SIGINT the worker shuts down within about 25 seconds; set the
+  orchestrator's stop grace period above that.
+
+## Run
+
+```
+docker run -d --name email-hosted-worker -v email-hosted-state:/state \
+  -e QLAR_BASE_URL=https://example.invalid/api/email-gateway \
+  -e QLAR_WORKER_API_KEY=... -e KEY_VAULT_URI=https://example.vault.azure.net \
+  --stop-timeout 40 ghcr.io/qlar-ai/email-hosted-worker:latest
+```

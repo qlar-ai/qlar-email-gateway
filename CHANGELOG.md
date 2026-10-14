@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The wire protocol version is separate from the
 release version and is listed per release.
 
+## [Unreleased]
+
+### Added
+
+- Hosted worker mode: `qlar-email-hosted-worker`, run by Qlar to serve many mailboxes from one
+  process (install with the `hosted` extra), and the image `ghcr.io/qlar-ai/email-hosted-worker`
+  built from `Dockerfile.hosted`. Mailbox credentials come from Azure Key Vault and registrations
+  from the Qlar control plane. See [docs/HOSTED.md](docs/HOSTED.md). The on-prem gateway is
+  unchanged.
+
 ## [0.1.3] — 2026-10-11
 
 Protocol 1. No Messenger-BE change needed.

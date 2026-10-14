@@ -60,6 +60,16 @@ jobs:
             ghcr.io/qlar-ai/email-gateway:${{ steps.version.outputs.number }}
             ghcr.io/qlar-ai/email-gateway:latest
 
+      - name: Build and push hosted worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.hosted
+          push: true
+          tags: |
+            ghcr.io/qlar-ai/email-hosted-worker:${{ steps.version.outputs.number }}
+            ghcr.io/qlar-ai/email-hosted-worker:latest
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
