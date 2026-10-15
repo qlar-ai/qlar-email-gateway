@@ -2,7 +2,7 @@
 
 > **Run these yourself; nothing here is run by the agent.** Placeholders are in `<angle brackets>`.
 > Messenger-BE side first: `Messenger-BE/docs/email-hosted-runbook.md` (Key Vault, the two app
-> settings, APIM). This document is the worker side. Reference for the worker itself: [HOSTED.md](HOSTED.md).
+> settings, APIM; or its "Option B" section if there is no Key Vault). This document is the worker side. Reference for the worker itself: [HOSTED.md](HOSTED.md).
 
 ## Hard rules
 
@@ -10,8 +10,9 @@
    deployment slot that runs alongside (swap-style deploys briefly run two). A second instance
    calls `GET hosted/registrations` too, and every call re-issues a one-time enrolment code for
    un-enrolled mailboxes, so two instances invalidate each other's codes and flap enrolments.
-2. **Create the managed identity BEFORE the first worker start.** `DefaultAzureCredential` works on
-   a laptop through developer sign-in but fails on App Service until the identity and its role exist.
+2. **Option A (Key Vault) only: create the managed identity BEFORE the first worker start.**
+   `DefaultAzureCredential` works on a laptop through developer sign-in but fails on App Service until
+   the identity and its role exist. Option B (Cosmos-encrypted) needs no identity and no role.
 3. **The worker calls Messenger-BE over the DIRECT App Service URL**, not APIM.
 4. A `401`/`403` from the control plane stops the worker (exit code 1). See *Key rotation* below.
 5. The Docker daemon was not available while this was implemented: **the image has never been built
@@ -62,7 +63,7 @@ az appservice plan create -g RG_DEV -n <plan-dev> --is-linux --sku B2
 az webapp create -g RG_DEV -p <plan-dev> -n <worker-app-dev> \
   --container-image-name ghcr.io/qlar-ai/email-hosted-worker:<version>
 
-# (1) Identity FIRST, before any start with real settings
+# (1) Option A only: identity FIRST, before any start with real settings (skip for Option B)
 az webapp identity assign -g RG_DEV -n <worker-app-dev>
 
 # (2) Pin to one instance, no autoscale
@@ -88,10 +89,11 @@ above that. The worker
 listens on no port; if App Service's startup probe reports the container as unhealthy, disable the health
 check rather than adding a listener (unverified: first run on App Service is yours to observe).
 
-Then grant the Key Vault role to the identity just created
+**Option A only:** grant the Key Vault role to the identity just created
 (`Messenger-BE/docs/email-hosted-runbook.md` §1b, role **Key Vault Secrets User**, get only).
+Option B: nothing to grant.
 
-## 3. App settings (the five worker variables)
+## 3. App settings (the worker variables)
 
 Generate the key once per environment and use the **same** value on Messenger-BE
 (`Messenger_EmailGateway_HostedWorkerApiKey`).
@@ -105,6 +107,10 @@ az webapp config appsettings set -g RG_DEV -n <worker-app-dev> --settings \
   LOG_LEVEL="INFO"
 az webapp restart -g RG_DEV -n <worker-app-dev>
 ```
+
+**Option B (no Key Vault):** omit the `KEY_VAULT_URI` line; the worker needs only `QLAR_BASE_URL`,
+`QLAR_WORKER_API_KEY`, `STATE_DIR` and `LOG_LEVEL`. `KEY_VAULT_URI` is required only if any registration's
+`credentialSource` is `keyvault`.
 
 PROD: `QLAR_BASE_URL=https://wap-pusaka-messenger-prod.azurewebsites.net/api/email-gateway`,
 `<vault-prod>`, a different key. `QLAR_BASE_URL` must be `https://` and **not** the APIM host. The
@@ -128,8 +134,11 @@ revoked; stopping it`). Healthy is therefore *absence of the failure lines* plus
   `Refused a worker call without a valid worker key`.
 
 Once the first hosted mailbox is created from CMS (ACCEPTANCE-HOSTED.md row 1) the worker log shows
-`mailbox egw_<guid> started`. That is the real "worker is wired" proof. A `Forbidden` while reading the
+`mailbox egw_<guid> started`. That is the real "worker is wired" proof. Option A: a `Forbidden` while reading the
 secret means the Secrets User role has not propagated or went to the wrong principal.
+Option B: the worker log shows `mailbox egw_<guid> started` with no Key Vault involved; a
+`skipping mailbox ...: the control plane has no credentials for it` line is the 404 case in the
+troubleshooting table.
 
 **No credential string in logs.** After the first mailbox has run, search the log for the password
 and the app password (without spaces):
@@ -164,7 +173,9 @@ survives on the Azure Files share.
 | Symptom | Cause |
 |---|---|
 | `ImagePullFailure` / `unauthorized` | GHCR package is still Private, or the name/org differs from what CI pushed |
-| Container restarts immediately, `missing required environment` | one of `QLAR_BASE_URL`, `QLAR_WORKER_API_KEY`, `KEY_VAULT_URI` unset |
+| Container restarts immediately, `missing required environment` | `QLAR_BASE_URL` or `QLAR_WORKER_API_KEY` unset (`KEY_VAULT_URI` is optional) |
+| `skipping mailbox egw_...: its credentials are in Key Vault but KEY_VAULT_URI is not set` | the registration's `credentialSource` is `keyvault` (or absent) and the worker has no `KEY_VAULT_URI`: set it (Option A) or recreate the mailbox under the Cosmos store (Option B) |
+| `skipping mailbox egw_...: the control plane has no credentials for it` (credentials 404) | the registration was revoked or deleted, no credentials are stored for it, or they cannot be decrypted because Messenger-BE's `Messenger_EmailGateway_CredentialEncryptionKey` changed. Check the Messenger-BE log (`Credentials refused`, `No stored credentials`, `cannot be decrypted`); the customer re-saves via **Update credentials** |
 | `the control plane refused the worker key` then exit 1 | key differs from Messenger-BE's, or Messenger's setting is unset (403) |
-| mailbox `skipping`/errors reading the secret, `Forbidden` | Secrets User not assigned or not yet propagated; identity created after assignment target |
+| (Option A) mailbox `skipping`/errors reading the secret, `Forbidden` | Secrets User not assigned or not yet propagated; identity created after assignment target |
 | Mailboxes lose enrolment after a state wipe | worker re-keys itself via `POST hosted/registrations/{id}/rekey`; nothing to do, but the share must be mounted at `/state` |

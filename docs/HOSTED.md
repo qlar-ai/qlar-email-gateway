@@ -6,17 +6,22 @@ for customer premises; there, use the [on-prem gateway](INSTALL.md). Image:
 
 ## Configuration
 
-Five environment variables and nothing else.
+Five environment variables and nothing else. Which are needed depends on where Messenger-BE keeps the
+mailbox credentials (`Messenger-BE/docs/email-hosted-runbook.md`): **Option A** Key Vault, **Option B**
+Cosmos-encrypted (no Key Vault).
 
 | Variable | Required | Meaning | Default |
 |---|---|---|---|
 | `QLAR_BASE_URL` | yes | Control-plane base URL, ends in `/api/email-gateway`; must be `https://` outside local testing | — |
 | `QLAR_WORKER_API_KEY` | yes | Worker key, sent as `X-Internal-Api-Key` | — |
-| `KEY_VAULT_URI` | yes | Azure Key Vault holding the per-mailbox credential secrets | — |
+| `KEY_VAULT_URI` | only for Option A | Azure Key Vault holding the per-mailbox credential secrets. Required only if some registration's `credentialSource` is `keyvault` (absent counts as `keyvault`); a registration whose source needs it while it is unset is skipped with an error | empty |
 | `STATE_DIR` | no | Root of the per-mailbox state | `/state` |
 | `LOG_LEVEL` | no | Python log level | `INFO` |
 
 With a required variable missing the worker prints `missing required environment: ...` and exits 1.
+A worker for Option B needs only `QLAR_BASE_URL`, `QLAR_WORKER_API_KEY`, `STATE_DIR` and `LOG_LEVEL`:
+registrations with `credentialSource` `control-plane` have their credentials fetched from
+`GET /hosted/registrations/{gatewayId}/credentials` (worker key, plaintext over TLS, never cached).
 
 ## State layout
 
@@ -43,9 +48,9 @@ when the worker finds a mailbox that Qlar lists as enrolled but that has no loca
 `POST /hosted/registrations/{gatewayId}/rekey` itself and redeems the fresh enrolment code it gets
 back; nothing prompts.
 
-## Key Vault access
+## Key Vault access (Option A only)
 
-The worker's identity needs secret **get** only (for example the `Key Vault Secrets User` role
+Option B needs no managed identity and no role. For Option A the worker's identity needs secret **get** only (for example the `Key Vault Secrets User` role
 scoped to the vault). It never lists, sets or deletes secrets.
 
 ## Operating rules
