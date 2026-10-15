@@ -1,3 +1,4 @@
+import json
 import logging
 import threading
 import time
@@ -10,6 +11,7 @@ from qlar_email_gateway.hosted.api import (
     ControlPlaneAuthError,
     ControlPlaneRejected,
     ControlPlaneUnreachable,
+    CredentialsNotAvailable,
 )
 from qlar_email_gateway.hosted.controller import (
     MAX_MAILBOXES,
@@ -39,6 +41,15 @@ class FakeControl:
         self.results: list[tuple[str, dict]] = []
         self.list_error: Exception | None = None
         self.poll_error: Exception | None = None
+        self.credentials: dict[str, object] = {}
+        self.credential_fetches: list[str] = []
+
+    def fetch_credentials(self, gateway_id):
+        self.credential_fetches.append(gateway_id)
+        value = self.credentials.get(gateway_id)
+        if isinstance(value, Exception):
+            raise value
+        return value
 
     def list_registrations(self):
         if self.list_error:
@@ -98,11 +109,11 @@ def fake_fetch(vault_uri, secret_name):
     )
 
 
-def make_controller(control, tmp_path, fetch=fake_fetch, **kwargs):
+def make_controller(control, tmp_path, fetch=fake_fetch, vault_uri="https://vault", **kwargs):
     FakeRuntime.created = []
     return HostedController(
         control,
-        vault_uri="https://vault",
+        vault_uri=vault_uri,
         base_url=BASE,
         state_dir=tmp_path,
         fetch_credentials=fetch,
@@ -826,3 +837,108 @@ def test_restart_of_a_gone_or_revoked_mailbox_deletes_its_state(tmp_path, rows):
 
     assert not state.exists()
     assert "a" not in controller.runtimes
+
+
+CP_JSON = json.dumps(
+    {
+        "imapHost": "imap.x.com",
+        "imapPort": 993,
+        "imapSecurity": "ssl",
+        "smtpHost": "smtp.x.com",
+        "smtpPort": 587,
+        "smtpSecurity": "starttls",
+        "username": "u@x.com",
+        "password": "TOP-SECRET-PW",
+        "address": "u@x.com",
+    }
+)
+
+
+def cp_row(gateway_id):
+    return {**row(gateway_id), "credentialSource": "control-plane"}
+
+
+def test_control_plane_source_fetches_via_the_client_and_skips_the_vault(tmp_path):
+    def vault_must_not_be_used(vault_uri, secret_name):
+        raise AssertionError("vault used")
+
+    control = FakeControl([cp_row("a")])
+    control.credentials["a"] = CP_JSON
+    controller = make_controller(control, tmp_path, fetch=vault_must_not_be_used, vault_uri="")
+
+    controller.reconcile_once()
+
+    assert running(controller) == {"a"}
+    assert control.credential_fetches == ["a"]
+    assert FakeRuntime.created[0].mail.password == "TOP-SECRET-PW"
+
+
+def test_keyvault_source_still_uses_the_vault_fetcher(tmp_path):
+    control = FakeControl([{**row("a"), "credentialSource": "keyvault"}])
+    controller = make_controller(control, tmp_path)
+
+    controller.reconcile_once()
+
+    assert running(controller) == {"a"}
+    assert control.credential_fetches == []
+
+
+def test_absent_credential_source_means_keyvault(tmp_path):
+    control = FakeControl([row("a")])
+    controller = make_controller(control, tmp_path)
+
+    controller.reconcile_once()
+
+    assert running(controller) == {"a"}
+    assert control.credential_fetches == []
+
+
+def test_keyvault_row_without_a_vault_uri_skips_only_that_mailbox(tmp_path, caplog):
+    control = FakeControl([row("kv"), cp_row("cp")])
+    control.credentials["cp"] = CP_JSON
+    controller = make_controller(control, tmp_path, vault_uri="")
+
+    with caplog.at_level(logging.ERROR):
+        controller.reconcile_once()
+
+    assert running(controller) == {"cp"}
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "kv" in errors[0]
+
+
+def test_control_plane_404_skips_that_mailbox_with_one_error_log(tmp_path, caplog):
+    control = FakeControl([cp_row("gone"), cp_row("ok")])
+    control.credentials["gone"] = CredentialsNotAvailable("HTTP 404")
+    control.credentials["ok"] = CP_JSON
+    controller = make_controller(control, tmp_path)
+
+    with caplog.at_level(logging.ERROR):
+        controller.reconcile_once()
+
+    assert running(controller) == {"ok"}
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "gone" in errors[0]
+
+
+def test_control_plane_auth_error_is_not_swallowed(tmp_path):
+    control = FakeControl([cp_row("a")])
+    control.credentials["a"] = ControlPlaneAuthError("refused")
+    controller = make_controller(control, tmp_path)
+
+    with pytest.raises(ControlPlaneAuthError):
+        controller.reconcile_once()
+
+
+def test_no_password_in_any_log_record_or_message(tmp_path, caplog):
+    bad = json.dumps({**json.loads(CP_JSON), "imapPort": "x", "smtpHost": ""})
+    control = FakeControl([cp_row("bad"), cp_row("ok")])
+    control.credentials["bad"] = bad
+    control.credentials["ok"] = CP_JSON
+    controller = make_controller(control, tmp_path)
+
+    with caplog.at_level(logging.DEBUG):
+        controller.reconcile_once()
+
+    assert running(controller) == {"ok"}
+    text = "\n".join(r.getMessage() + str(r.exc_info) + str(r.args) for r in caplog.records)
+    assert "TOP-SECRET-PW" not in text

@@ -83,3 +83,8 @@ def _secret_client(vault_uri: str) -> Any:
 def fetch_mail_settings(vault_uri: str, secret_name: str) -> MailSettings:
     secret = _secret_client(vault_uri).get_secret(secret_name)
     return parse_mail_settings(secret.value or "")
+
+
+def fetch_mail_settings_via_control_plane(client: Any, gateway_id: str) -> MailSettings:
+    """Reads the credential JSON from Messenger-BE (it stores it encrypted) and parses it."""
+    return parse_mail_settings(client.fetch_credentials(gateway_id))

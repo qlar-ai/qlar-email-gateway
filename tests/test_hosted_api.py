@@ -10,6 +10,7 @@ from qlar_email_gateway.hosted.api import (
     ControlPlaneClient,
     ControlPlaneRejected,
     ControlPlaneUnreachable,
+    CredentialsNotAvailable,
 )
 
 
@@ -117,3 +118,44 @@ def test_other_client_errors_raise_rejected_not_raw_httpx():
         make_client(handler).rekey("egw_x")
 
     assert caught.value.status == 404
+
+
+def test_fetch_credentials_gets_raw_json_with_the_worker_key():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["key"] = request.headers["X-Internal-Api-Key"]
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        return httpx.Response(200, text='{"password":"s3cret"}')
+
+    text = make_client(handler).fetch_credentials("egw_1")
+
+    assert text == '{"password":"s3cret"}'
+    assert seen == {
+        "key": "k3y",
+        "method": "GET",
+        "url": "https://q/api/email-gateway/hosted/registrations/egw_1/credentials",
+    }
+
+
+def test_fetch_credentials_404_is_credentials_not_available():
+    client = make_client(lambda request: httpx.Response(404))
+
+    with pytest.raises(CredentialsNotAvailable):
+        client.fetch_credentials("egw_1")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_fetch_credentials_auth_failure_stays_fatal(status):
+    client = make_client(lambda request: httpx.Response(status))
+
+    with pytest.raises(ControlPlaneAuthError):
+        client.fetch_credentials("egw_1")
+
+
+def test_fetch_credentials_other_4xx_is_rejected():
+    client = make_client(lambda request: httpx.Response(400))
+
+    with pytest.raises(ControlPlaneRejected):
+        client.fetch_credentials("egw_1")

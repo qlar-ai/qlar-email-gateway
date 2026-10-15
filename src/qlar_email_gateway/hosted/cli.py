@@ -1,6 +1,7 @@
 """`qlar-email-hosted-worker`: the Qlar-run process that serves every hosted mailbox.
 
-Configured by five environment variables and nothing else; there is no terminal to prompt on and
+Configured by environment variables (KEY_VAULT_URI is optional) and nothing else; there is no
+terminal to prompt on and
 no `.env` to write.
 """
 
@@ -15,7 +16,7 @@ from pathlib import Path
 from .api import ControlPlaneClient
 from .controller import HostedController
 
-REQUIRED = ("QLAR_BASE_URL", "QLAR_WORKER_API_KEY", "KEY_VAULT_URI")
+REQUIRED = ("QLAR_BASE_URL", "QLAR_WORKER_API_KEY")
 DEFAULT_STATE_DIR = "/state"
 
 
@@ -24,7 +25,7 @@ def main() -> int:
     if missing:
         print(
             "missing required environment: " + ", ".join(missing) + ". Set "
-            "QLAR_BASE_URL (ends in /api/email-gateway), QLAR_WORKER_API_KEY and KEY_VAULT_URI.",
+            "QLAR_BASE_URL (ends in /api/email-gateway) and QLAR_WORKER_API_KEY.",
             file=sys.stderr,
         )
         return 1
@@ -40,7 +41,7 @@ def main() -> int:
     control = ControlPlaneClient(base_url, os.environ["QLAR_WORKER_API_KEY"])
     controller = HostedController(
         control,
-        vault_uri=os.environ["KEY_VAULT_URI"].strip(),
+        vault_uri=os.environ.get("KEY_VAULT_URI", "").strip(),
         base_url=base_url,
         state_dir=Path(os.environ.get("STATE_DIR", "").strip() or DEFAULT_STATE_DIR),
     )

@@ -26,6 +26,10 @@ class ControlPlaneUnreachable(Exception):
     """The control plane could not be reached, or answered with a server error."""
 
 
+class CredentialsNotAvailable(Exception):
+    """The control plane has no credentials to give this mailbox (404: unknown, revoked, none stored)."""
+
+
 class ControlPlaneRejected(Exception):
     """The control plane refused a request with a 4xx other than 401/403 (not found, bad request)."""
 
@@ -72,6 +76,16 @@ class ControlPlaneClient:
     def rekey(self, gateway_id: str) -> str:
         response = self._send("POST", f"/hosted/registrations/{gateway_id}/rekey", json={})
         return str(response.json()["enrollmentCode"])
+
+    def fetch_credentials(self, gateway_id: str) -> str:
+        """The mailbox credential JSON as raw text. Never logged; the caller parses it."""
+        path = f"/hosted/registrations/{gateway_id}/credentials"
+        try:
+            return self._send("GET", path).text
+        except ControlPlaneRejected as error:
+            if error.status == 404:
+                raise CredentialsNotAvailable(f"no credentials available for {gateway_id}") from None
+            raise
 
     def _send(
         self, method: str, path: str, *, timeout: float = REQUEST_TIMEOUT_SECONDS, **kwargs: Any

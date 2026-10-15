@@ -27,8 +27,14 @@ from .api import (
     ControlPlaneClient,
     ControlPlaneRejected,
     ControlPlaneUnreachable,
+    CredentialsNotAvailable,
 )
-from .credentials import CredentialFormatError, fetch_mail_settings, parse_mail_settings
+from .credentials import (
+    CredentialFormatError,
+    fetch_mail_settings,
+    fetch_mail_settings_via_control_plane,
+    parse_mail_settings,
+)
 from .runtime import MailboxRuntime, build_settings
 
 logger = logging.getLogger("qlar_email_gateway.hosted.controller")
@@ -56,7 +62,7 @@ class HostedController:
         self,
         control: ControlPlaneClient,
         *,
-        vault_uri: str,
+        vault_uri: str = "",
         base_url: str,
         state_dir: Path,
         fetch_credentials: Callable[[str, str], MailSettings] = fetch_mail_settings,
@@ -277,8 +283,23 @@ class HostedController:
                 self._starting.discard(gateway_id)
 
     def _start_claimed(self, gateway_id: str, registration: dict[str, Any]) -> bool:
+        source = str(registration.get("credentialSource") or "keyvault").lower()
+        if source != "control-plane" and not self._vault_uri:
+            logger.error(
+                "skipping mailbox %s: its credentials are in Key Vault but KEY_VAULT_URI is not set",
+                gateway_id,
+            )
+            return False
         try:
-            mail = self._fetch_credentials(self._vault_uri, str(registration.get("secretName") or ""))
+            if source == "control-plane":
+                mail = fetch_mail_settings_via_control_plane(self._control, gateway_id)
+            else:
+                mail = self._fetch_credentials(self._vault_uri, str(registration.get("secretName") or ""))
+        except CredentialsNotAvailable:
+            logger.error("skipping mailbox %s: the control plane has no credentials for it", gateway_id)
+            return False
+        except ControlPlaneAuthError:
+            raise
         except CredentialFormatError as error:
             logger.error("skipping mailbox %s: %s", gateway_id, error)
             return False

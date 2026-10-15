@@ -11,7 +11,7 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-@pytest.mark.parametrize("missing", ["QLAR_BASE_URL", "QLAR_WORKER_API_KEY", "KEY_VAULT_URI"])
+@pytest.mark.parametrize("missing", ["QLAR_BASE_URL", "QLAR_WORKER_API_KEY"])
 def test_missing_required_env_fails_fast_naming_the_key(monkeypatch, capsys, missing):
     values = {
         "QLAR_BASE_URL": "https://q/api/email-gateway",
@@ -87,3 +87,20 @@ def test_signal_handlers_installed_once_and_stop_the_controller(monkeypatch, tmp
     assert set(installed) == {cli.signal.SIGINT, cli.signal.SIGTERM}
     installed[cli.signal.SIGTERM](cli.signal.SIGTERM, None)
     assert FakeController.last.stopped
+
+
+def test_starts_with_only_the_two_required_variables(monkeypatch, tmp_path):
+    configure_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("KEY_VAULT_URI")
+    FakeController.crash = False
+
+    assert cli.main() == 0
+    assert not FakeController.last.kwargs["vault_uri"]
+
+
+def test_missing_message_names_only_the_two_required_variables(capsys):
+    assert cli.main() == 1
+
+    err = capsys.readouterr().err
+    assert "missing required environment: QLAR_BASE_URL, QLAR_WORKER_API_KEY" in err
+    assert "KEY_VAULT_URI" not in err.split("Set")[0]

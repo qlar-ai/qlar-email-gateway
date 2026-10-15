@@ -3,7 +3,11 @@ import sys
 
 import pytest
 
-from qlar_email_gateway.hosted.credentials import CredentialFormatError, parse_mail_settings
+from qlar_email_gateway.hosted.credentials import (
+    CredentialFormatError,
+    fetch_mail_settings_via_control_plane,
+    parse_mail_settings,
+)
 
 FULL = {
     "imapHost": "imap.example.com",
@@ -101,3 +105,26 @@ def test_fetch_reuses_one_credential_and_client_per_vault(monkeypatch):
 
 def test_base_import_does_not_load_azure():
     assert "azure.identity" not in sys.modules
+
+
+def test_fetch_via_control_plane_parses_the_returned_json():
+    class Client:
+        def fetch_credentials(self, gateway_id):
+            assert gateway_id == "egw_1"
+            return json.dumps(FULL)
+
+    settings = fetch_mail_settings_via_control_plane(Client(), "egw_1")
+
+    assert settings.user == "bob@example.com"
+    assert settings.password == FULL["password"]
+
+
+def test_fetch_via_control_plane_bad_json_never_leaks_the_password():
+    class Client:
+        def fetch_credentials(self, gateway_id):
+            return json.dumps({**FULL, "imapPort": "nope", "smtpHost": ""})
+
+    with pytest.raises(CredentialFormatError) as caught:
+        fetch_mail_settings_via_control_plane(Client(), "egw_1")
+
+    assert FULL["password"] not in str(caught.value)
