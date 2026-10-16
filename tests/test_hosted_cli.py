@@ -2,7 +2,15 @@ import pytest
 
 from qlar_email_gateway.hosted import cli
 
-ENV_KEYS = ("QLAR_BASE_URL", "QLAR_WORKER_API_KEY", "KEY_VAULT_URI", "STATE_DIR", "LOG_LEVEL")
+ENV_KEYS = (
+    "QLAR_BASE_URL",
+    "QLAR_WORKER_API_KEY",
+    "KEY_VAULT_URI",
+    "STATE_DIR",
+    "LOG_LEVEL",
+    "PORT",
+    "WEBSITES_PORT",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -104,3 +112,45 @@ def test_missing_message_names_only_the_two_required_variables(capsys):
     err = capsys.readouterr().err
     assert "missing required environment: QLAR_BASE_URL, QLAR_WORKER_API_KEY" in err
     assert "KEY_VAULT_URI" not in err.split("Set")[0]
+
+
+def test_no_listener_without_a_port_variable(monkeypatch, tmp_path):
+    configure_env(monkeypatch, tmp_path)
+    FakeController.crash = False
+    started = []
+    monkeypatch.setattr(cli, "start_health_server", lambda port: started.append(port))
+
+    assert cli.main() == 0
+    assert started == []
+
+
+def test_listener_starts_on_the_host_port_and_stops_with_the_worker(monkeypatch, tmp_path):
+    configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("WEBSITES_PORT", "8080")
+    FakeController.crash = False
+    events = []
+
+    class FakeServer:
+        def shutdown(self):
+            events.append("shutdown")
+
+    monkeypatch.setattr(cli, "start_health_server", lambda port: events.append(port) or FakeServer())
+
+    assert cli.main() == 0
+    assert events == [8080, "shutdown"]
+
+
+def test_listener_is_stopped_even_when_the_worker_crashes(monkeypatch, tmp_path):
+    configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("PORT", "80")
+    FakeController.crash = True
+    events = []
+
+    class FakeServer:
+        def shutdown(self):
+            events.append("shutdown")
+
+    monkeypatch.setattr(cli, "start_health_server", lambda port: FakeServer())
+
+    assert cli.main() == 1
+    assert events == ["shutdown"]

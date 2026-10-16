@@ -7,6 +7,17 @@ release version and is listed per release.
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-10-17
+
+Protocol 1. Hosted worker only; the on-prem gateway is unchanged.
+
+### Fixed
+
+- The hosted worker now answers `200 ok` on `WEBSITES_PORT` (or `PORT`) when the host sets one.
+  Azure App Service for Containers kills a container that answers no HTTP ping at start, so 0.1.5
+  could not run there. Nothing listens when neither variable is set, and the answer carries no
+  state.
+
 ## [0.1.5] — 2026-10-17
 
 Protocol 1. The first release that publishes the hosted worker image. Tag `v0.1.4` was pushed while

@@ -2,7 +2,8 @@
 
 `qlar-email-hosted-worker` is the Qlar-run process that serves every hosted mailbox. It is not
 for customer premises; there, use the [on-prem gateway](INSTALL.md). Image:
-`ghcr.io/qlar-ai/email-hosted-worker`, built from `Dockerfile.hosted`. It listens on no port.
+`ghcr.io/qlar-ai/email-hosted-worker`, built from `Dockerfile.hosted`. It has no web surface: it only answers `200 ok` on `WEBSITES_PORT` / `PORT` when the host sets one
+(App Service needs an HTTP answer at start), and listens on nothing otherwise.
 
 ## Configuration
 

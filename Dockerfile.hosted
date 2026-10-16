@@ -17,5 +17,7 @@ VOLUME ["/state"]
 USER qlar
 WORKDIR /home/qlar
 
-# The worker listens on no port: there is deliberately no EXPOSE.
+# The worker has no web surface. When the host sets WEBSITES_PORT or PORT (Azure App Service does)
+# it answers `200 ok` there, because App Service kills a container that answers no HTTP ping.
+# Nothing listens when neither is set.
 ENTRYPOINT ["qlar-email-hosted-worker"]

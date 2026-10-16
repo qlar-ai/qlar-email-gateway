@@ -79,15 +79,19 @@ az webapp config storage-account add -g RG_DEV -n <worker-app-dev> \
 
 # (4) Do not let App Service mount its own storage over the container, and give shutdown time
 az webapp config appsettings set -g RG_DEV -n <worker-app-dev> --settings \
-  WEBSITES_ENABLE_APP_SERVICE_STORAGE=false WEBSITES_CONTAINER_STOP_TIME_LIMIT=60
+  WEBSITES_ENABLE_APP_SERVICE_STORAGE=false WEBSITES_CONTAINER_STOP_TIME_LIMIT=60 WEBSITES_PORT=8080
 ```
 
 If the plan is shared with other apps, scale-out applies to all of them: use a dedicated plan.
 `WEBSITES_CONTAINER_STOP_TIME_LIMIT=60` is the recommended value: the worker's shutdown is bounded
 by a shared deadline of ~25 s plus any in-flight SMTP send (up to 30 s), and the limit must stay
-above that. The worker
-listens on no port; if App Service's startup probe reports the container as unhealthy, disable the health
-check rather than adding a listener (unverified: first run on App Service is yours to observe).
+above that.
+
+**App Service kills a container that answers no HTTP ping** (`didn't respond to HTTP pings on port`,
+after ~230 s). From 0.1.6 the worker answers `200 ok` (nothing else, no state) on `WEBSITES_PORT`, or
+`PORT` if that is unset. Set `WEBSITES_PORT=8080` as an app setting: the container runs as a
+non-root user, and 8080 needs no privilege. Do not enable a health-check path; the startup ping is
+enough. Images before 0.1.6 cannot be hosted on App Service.
 
 **Option A only:** grant the Key Vault role to the identity just created
 (`Messenger-BE/docs/email-hosted-runbook.md` §1b, role **Key Vault Secrets User**, get only).

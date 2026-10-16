@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .api import ControlPlaneClient
 from .controller import HostedController
+from .health import configured_port, start_health_server
 
 REQUIRED = ("QLAR_BASE_URL", "QLAR_WORKER_API_KEY")
 DEFAULT_STATE_DIR = "/state"
@@ -54,12 +55,19 @@ def main() -> int:
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, handle_signal)
 
+    health = None
+    port = configured_port(os.environ)
+    if port is not None:
+        health = start_health_server(port)
+
     try:
         controller.run_forever()
     except Exception:
         log.exception("the hosted worker crashed")
         return 1
     finally:
+        if health is not None:
+            health.shutdown()
         control.close()
     return 0
 
