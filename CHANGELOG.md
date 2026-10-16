@@ -7,6 +7,12 @@ release version and is listed per release.
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-10-17
+
+Protocol 1. The first release that publishes the hosted worker image. Tag `v0.1.4` was pushed while
+`__version__` was still `0.1.3`, so the release workflow's version check failed and nothing was
+published under it; use 0.1.5.
+
 ### Added
 
 - Hosted worker mode: `qlar-email-hosted-worker`, run by Qlar to serve many mailboxes from one
