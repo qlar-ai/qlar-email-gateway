@@ -7,6 +7,19 @@ release version and is listed per release.
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-10-23
+
+Protocol 1. Hosted worker and on-prem gateway share the change; on a normal disk behaviour is identical.
+
+### Fixed
+
+- The private-key permission check no longer stops a mailbox from starting on a filesystem that cannot
+  hold permission bits. An SMB share (App Service's persistent `/home`, an Azure Files mount) reports
+  every file as `0777` and ignores `chmod`, so 0.1.6 refused to start any mailbox whose state lived
+  there (`KeyFilePermissionError`). The worker now probes the directory with a throw-away `0600` file;
+  if that reads back loose too, it logs a warning and continues. A loose key on a disk that does keep
+  permissions is still refused.
+
 ## [0.1.6] — 2026-10-17
 
 Protocol 1. Hosted worker only; the on-prem gateway is unchanged.

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
 import secrets
 import stat
@@ -34,6 +35,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey, EllipticCurvePublicKey
+
+logger = logging.getLogger(__name__)
 
 SIGNATURE_HEADER = "X-Qlar-Signature"
 GATEWAY_ID_HEADER = "X-Qlar-Gateway-Id"
@@ -86,16 +89,52 @@ def _assert_private_key_permissions(path: Path) -> None:
     """Refuses to use a private key that group or others can read.
 
     Skipped on Windows, where POSIX mode bits are not meaningful and the check would fire
-    on every run for no reason.
+    on every run for no reason. Also skipped, with a warning, on a filesystem that cannot hold
+    mode bits at all (an SMB share such as App Service's `/home` or an Azure Files mount reports
+    every file as 0777 and ignores chmod): refusing there would make the state unusable, and
+    nothing the operator does can change what the share reports.
     """
     if os.name == "nt":
         return
 
     mode = path.stat().st_mode
     if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        if not _filesystem_keeps_permissions(path.parent):
+            logger.warning(
+                "%s reports mode %s, but this filesystem does not keep permission bits; "
+                "access to the key is limited by who can reach the share",
+                path,
+                oct(mode & 0o777),
+            )
+            return
         raise KeyFilePermissionError(
             f"{path} is accessible to group/other (mode {oct(mode & 0o777)}). Run: chmod 600 {path}"
         )
+
+
+def _filesystem_keeps_permissions(directory: Path) -> bool:
+    """Whether a file created here with mode 0600 reads back as owner-only.
+
+    Probed with a throw-away file, never the key itself, so a genuinely loose key on a normal
+    disk is still refused and nothing about it is changed.
+    """
+    probe = directory / f".mode-probe-{secrets.token_hex(4)}"
+    try:
+        descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+        try:
+            os.chmod(probe, 0o600)
+        except OSError:
+            return False
+        return not probe.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+    except OSError:
+        # Cannot even probe (read-only directory): keep the strict behaviour.
+        return True
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
 
 
 def public_key_pem(private_key: EllipticCurvePrivateKey) -> str:

@@ -207,3 +207,45 @@ class TestKeyFile:
         crypto.load_or_create_private_key(path)
         mode = path.stat().st_mode
         assert not mode & (stat.S_IRWXG | stat.S_IRWXO)
+
+    def test_loose_key_is_refused_on_a_filesystem_that_keeps_permissions(self, tmp_path):
+        import os
+
+        if os.name == "nt":
+            pytest.skip("POSIX permission bits are not meaningful on Windows")
+
+        path = tmp_path / "gateway-key.pem"
+        crypto.load_or_create_private_key(path)
+        path.chmod(0o644)
+
+        with pytest.raises(crypto.KeyFilePermissionError):
+            crypto.load_or_create_private_key(path)
+
+    def test_loose_key_is_accepted_with_a_warning_on_a_share_without_modes(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import os
+
+        if os.name == "nt":
+            pytest.skip("POSIX permission bits are not meaningful on Windows")
+
+        path = tmp_path / "gateway-key.pem"
+        first, _ = crypto.load_or_create_private_key(path)
+        path.chmod(0o777)  # what an SMB share reports for every file
+        monkeypatch.setattr(crypto, "_filesystem_keeps_permissions", lambda directory: False)
+
+        with caplog.at_level("WARNING", logger=crypto.logger.name):
+            second, created = crypto.load_or_create_private_key(path)
+
+        assert created is False
+        assert crypto.public_key_pem(first) == crypto.public_key_pem(second)
+        assert "does not keep permission bits" in caplog.text
+
+    def test_probe_leaves_nothing_behind_and_reports_a_normal_disk_as_keeping_modes(self, tmp_path):
+        import os
+
+        if os.name == "nt":
+            pytest.skip("POSIX permission bits are not meaningful on Windows")
+
+        assert crypto._filesystem_keeps_permissions(tmp_path) is True
+        assert list(tmp_path.iterdir()) == []
