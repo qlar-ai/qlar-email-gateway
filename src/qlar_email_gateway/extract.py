@@ -26,6 +26,7 @@ _CUT_MARKERS = (
 _OUTLOOK_FROM = re.compile(r"^\s*(From|Dari)\s*:", re.IGNORECASE)
 _OUTLOOK_SENT = re.compile(r"^\s*(Sent|Dikirim|Date|Tanggal)\s*:", re.IGNORECASE)
 _BLANK_RUN = re.compile(r"\n{3,}")
+_AUTHENTICATION_RESULTS_LIMIT = 2000
 _QUOTE_PREFIX = re.compile(r"^(?:\s*>)+ ?")
 _FORWARD_SUBJECT = re.compile(r"^\s*(fwd?|tr|ts|teruskan)\s*:", re.IGNORECASE)
 _FORWARD_BANNER = re.compile(
@@ -128,6 +129,7 @@ def build_inbound_payload(msg: EmailMessage, uid: int, limit: int) -> dict[str, 
             "autoSubmitted": _header_or_none(msg, "Auto-Submitted"),
             "precedence": _header_or_none(msg, "Precedence"),
             "listId": _header_or_none(msg, "List-Id"),
+            "authenticationResults": _authentication_results(msg),
         },
     }
 
@@ -186,6 +188,17 @@ def _single_line(value: object) -> str:
 def _header_or_none(msg: EmailMessage, name: str) -> str | None:
     value = msg.get(name)
     return _single_line(value) if value is not None else None
+
+
+def _authentication_results(msg: EmailMessage) -> str | None:
+    """The topmost `Authentication-Results` header, which the mailbox's own server added last.
+
+    It carries that server's SPF, DKIM and DMARC verdicts, so Qlar can tell a forged `From` from
+    a real one. Only the first is read: a sender can put their own copies further down, but not
+    above the one the receiving server prepends. Capped, because it is forwarded on every email.
+    """
+    value = _header_or_none(msg, "Authentication-Results")
+    return value[:_AUTHENTICATION_RESULTS_LIMIT] if value else None
 
 
 def _iso_date(value: object) -> str | None:

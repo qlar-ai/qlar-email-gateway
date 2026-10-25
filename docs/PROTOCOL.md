@@ -355,13 +355,24 @@ arrives in the connected mailbox, one request per email, in IMAP UID order.
   "text": "Kalau paket B berapa?",
   "textTruncated": false,
   "attachments": [],
-  "headers": { "autoSubmitted": null, "precedence": null, "listId": null }
+  "headers": {
+    "autoSubmitted": null,
+    "precedence": null,
+    "listId": null,
+    "authenticationResults": "mx.example.com; dkim=pass; spf=pass; dmarc=pass header.from=example.com"
+  }
 }
 ```
 
 `attachments[]` items are `{fileName, contentType, sizeBytes, url}`. `replyTo` is a single bare
 address (`team@corp.com`, no display name) or `null`; Qlar falls back to `from.address` when it is
 not exactly one valid address. Header values must not contain CR or LF.
+
+`headers.authenticationResults` is the topmost `Authentication-Results` header of the email (the
+mailbox's own server writes it after checking SPF, DKIM and DMARC), collapsed to one line and cut
+at 2000 characters, or `null` when there is none. Qlar reads it to tell a forged `From` from a real
+one; `null` means unknown, never a failure. The field is optional: a gateway from before 0.1.9
+omits it and Qlar accepts that, so it does not change the protocol version.
 
 | Status | Meaning |
 |---|---|

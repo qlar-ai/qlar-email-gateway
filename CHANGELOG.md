@@ -7,6 +7,17 @@ release version and is listed per release.
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-10-26
+
+Protocol 1. Hosted worker and on-prem gateway share the change. Qlar (Messenger-BE) must be released
+first: it is what reads the new field, and it accepts emails without it.
+
+### Added
+
+- `POST /inbound` carries `headers.authenticationResults`, the topmost `Authentication-Results` header of
+  the email. Qlar uses it so a private channel does not trust a whitelisted address that the mailbox's own
+  server says was forged. Missing means unknown. See PROTOCOL.md §8.
+
 ## [0.1.8] — 2026-10-26
 
 Protocol 1. Hosted worker and on-prem gateway share the change; the server needs no change.

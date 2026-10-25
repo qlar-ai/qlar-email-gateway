@@ -178,7 +178,50 @@ def test_payload_fields():
     assert payload["text"] == "Kalau paket B berapa?"
     assert payload["textTruncated"] is False
     assert payload["attachments"] == []
-    assert payload["headers"] == {"autoSubmitted": "no", "precedence": "normal", "listId": None}
+    assert payload["headers"] == {
+        "autoSubmitted": "no",
+        "precedence": "normal",
+        "listId": None,
+        "authenticationResults": None,
+    }
+
+
+class TestAuthenticationResults:
+    def test_topmost_header_is_forwarded_on_one_line(self):
+        raw = (
+            b"From: budi@customer.test\r\nMessage-ID: <p@customer.test>\r\n"
+            b"Authentication-Results: mx.google.com;\r\n dkim=pass header.i=@corp.test;\r\n"
+            b" dmarc=pass header.from=corp.test\r\n\r\nHalo\r\n"
+        )
+        msg = BytesParser(policy=policy.default).parsebytes(raw)
+
+        headers = build_inbound_payload(msg, uid=1, limit=20000)["headers"]  # type: ignore[arg-type]
+
+        assert headers["authenticationResults"] == (
+            "mx.google.com; dkim=pass header.i=@corp.test; dmarc=pass header.from=corp.test"
+        )
+
+    def test_only_the_first_of_several_headers_is_read(self):
+        msg = plain("Halo")
+        msg["Authentication-Results"] = "mx.google.com; dmarc=fail header.from=corp.test"
+        msg["Authentication-Results"] = "forged.example; dmarc=pass header.from=corp.test"
+
+        headers = build_inbound_payload(msg, uid=1, limit=20000)["headers"]
+
+        assert headers["authenticationResults"] == "mx.google.com; dmarc=fail header.from=corp.test"
+
+    def test_missing_header_is_null(self):
+        headers = build_inbound_payload(plain("Halo"), uid=1, limit=20000)["headers"]
+
+        assert headers["authenticationResults"] is None
+
+    def test_very_long_header_is_capped(self):
+        msg = plain("Halo")
+        msg["Authentication-Results"] = "mx.google.com; " + "x" * 5000
+
+        headers = build_inbound_payload(msg, uid=1, limit=20000)["headers"]
+
+        assert len(headers["authenticationResults"]) == 2000
 
 
 def test_payload_without_optional_headers():
