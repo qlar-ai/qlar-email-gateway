@@ -107,7 +107,7 @@ All settings live in `.env` (see [.env.example](.env.example)); real environment
 
 ## Hosted mode
 
-Qlar also runs this gateway as a hosted worker that serves many mailboxes from one process, with mailbox credentials in Azure Key Vault. That mode is operated by Qlar and is not something to install on your premises; if you operate or review it, read [docs/HOSTED.md](docs/HOSTED.md).
+Qlar also runs this gateway as a hosted worker that serves many mailboxes from one process, with mailbox credentials in Azure Key Vault. That mode is operated by Qlar and is not something to install on your premises.
 
 ## Documentation
 
