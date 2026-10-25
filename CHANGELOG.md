@@ -7,6 +7,18 @@ release version and is listed per release.
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-10-26
+
+Protocol 1. Hosted worker and on-prem gateway share the change; the server needs no change.
+
+### Fixed
+
+- A forwarded email is no longer cut away. Forwards (a `Fwd:`/`Fw:` subject, or a "Forwarded message" /
+  "Begin forwarded message:" banner ahead of any reply header) used to be treated as quoted history, so
+  the agent saw only what the forwarder typed above the block — or just the banner line when they typed
+  nothing. The forwarded message is now sent as the text, with inline `>` quote marks removed. Replies in
+  a thread keep their quoted history cut, even when the subject still says `Fwd:` after a `Re:`.
+
 ## [0.1.7] — 2026-10-23
 
 Protocol 1. Hosted worker and on-prem gateway share the change; on a normal disk behaviour is identical.

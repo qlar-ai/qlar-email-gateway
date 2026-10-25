@@ -94,6 +94,71 @@ class TestStripQuotedReply:
         assert strip_quoted_reply(text) == text
 
 
+GMAIL_FORWARD = (
+    "Tolong dijawab ya.\n\n"
+    "---------- Forwarded message ---------\n"
+    "From: Andri <andri@customer.test>\n"
+    "Date: Wed, 7 Oct 2026 at 15:00\n"
+    "Subject: Harga paket\n"
+    "To: Yanto <yanto@customer.test>\n\n"
+    "Berapa harga paket A?\n"
+)
+
+
+def forward(body: str, subject: str = "Fwd: Harga paket") -> EmailMessage:
+    msg = plain(body)
+    msg["Subject"] = subject
+    return msg
+
+
+class TestForward:
+    def test_gmail_forward_keeps_the_forwarded_message(self):
+        text, _ = extract_text(forward(GMAIL_FORWARD), 20000)
+
+        assert "Tolong dijawab ya." in text
+        assert "Andri <andri@customer.test>" in text
+        assert "Berapa harga paket A?" in text
+
+    def test_forward_without_own_words_keeps_the_forwarded_message(self):
+        body = GMAIL_FORWARD.replace("Tolong dijawab ya.\n\n", "")
+        text, _ = extract_text(forward(body), 20000)
+
+        assert "Berapa harga paket A?" in text
+
+    def test_outlook_forward_by_subject_keeps_the_header_block(self):
+        body = "FYI\n\nFrom: Andri\nSent: Wednesday\nTo: Yanto\nSubject: Harga\n\nBerapa harga paket A?"
+        text, _ = extract_text(forward(body, "FW: Harga"), 20000)
+
+        assert "Berapa harga paket A?" in text
+
+    def test_apple_banner_without_forward_subject(self):
+        body = "Cek ini\n\nBegin forwarded message:\n\nFrom: Andri\nDate: Rabu\nSubject: Harga\n\nBerapa?"
+        text, _ = extract_text(forward(body, "Harga"), 20000)
+
+        assert "Berapa?" in text
+
+    def test_quote_marks_of_an_inline_forward_are_removed(self):
+        body = "Cek\n\n---------- Pesan terusan ----------\n> Dari: Andri\n> Berapa?"
+        text, _ = extract_text(forward(body, "Harga"), 20000)
+
+        assert "Dari: Andri\nBerapa?" in text
+
+    def test_reply_in_a_thread_that_has_fwd_in_the_subject_is_still_cut(self):
+        body = "Paket B?\n\nOn Wed, 7 Oct 2026 at 15:00, Qlar <ask@corp.test> wrote:\nPaket A Rp 1 juta."
+        text, _ = extract_text(forward(body, "Re: Fwd: Harga paket"), 20000)
+
+        assert text == "Paket B?"
+
+    def test_old_forward_banner_under_a_reply_header_is_still_cut(self):
+        body = (
+            "Paket B?\n\nOn Wed, 7 Oct 2026 at 15:00, Qlar <ask@corp.test> wrote:\n"
+            "---------- Forwarded message ---------\nFrom: Andri\nDate: x\nold"
+        )
+        text, _ = extract_text(forward(body, "Re: Harga"), 20000)
+
+        assert text == "Paket B?"
+
+
 def test_payload_fields():
     payload = build_inbound_payload(load("multipart-reply.eml"), uid=4183, limit=20000)
 

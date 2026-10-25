@@ -26,6 +26,13 @@ _CUT_MARKERS = (
 _OUTLOOK_FROM = re.compile(r"^\s*(From|Dari)\s*:", re.IGNORECASE)
 _OUTLOOK_SENT = re.compile(r"^\s*(Sent|Dikirim|Date|Tanggal)\s*:", re.IGNORECASE)
 _BLANK_RUN = re.compile(r"\n{3,}")
+_QUOTE_PREFIX = re.compile(r"^(?:\s*>)+ ?")
+_FORWARD_SUBJECT = re.compile(r"^\s*(fwd?|tr|ts|teruskan)\s*:", re.IGNORECASE)
+_FORWARD_BANNER = re.compile(
+    r"^\s*(?:-{2,}\s*(?:Forwarded message|Pesan (?:terusan|yang diteruskan))\s*-{2,}"
+    r"|Begin forwarded message:|Awal pesan terusan:)\s*$",
+    re.IGNORECASE,
+)
 
 
 def extract_text(msg: EmailMessage, limit: int) -> tuple[str, bool]:
@@ -41,7 +48,8 @@ def extract_text(msg: EmailMessage, limit: int) -> tuple[str, bool]:
         html = _part_text(msg, "text/html")
         text = _html_to_text(html) if html is not None else ""
 
-    text = strip_quoted_reply(_normalize(text))
+    text = _normalize(text)
+    text = _keep_forwarded(text) if is_forward(msg, text) else strip_quoted_reply(text)
     if len(text) > limit:
         return text[:limit], True
     return text, False
@@ -69,6 +77,31 @@ def strip_quoted_reply(text: str) -> str:
 
     stripped = _BLANK_RUN.sub("\n\n", "\n".join(kept)).strip()
     return stripped if stripped else text.strip()
+
+
+def is_forward(msg: Message, text: str) -> bool:
+    """Whether the sender forwarded someone else's email instead of replying to a conversation.
+
+    A forward is the content: the person forwarding it wants the agent to answer what is in the
+    block, so it must not be cut like quoted history. Detected by a `Fwd:`/`Fw:` subject, or by a
+    forward banner that comes before any reply header (a banner buried under an `On … wrote:`
+    line is just an old forward inside a reply thread).
+    """
+    if _FORWARD_SUBJECT.match(str(msg.get("Subject") or "")):
+        return True
+
+    for line in text.split("\n"):
+        if any(marker.match(line) for marker in _CUT_MARKERS):
+            return False
+        if _FORWARD_BANNER.match(line):
+            return True
+    return False
+
+
+def _keep_forwarded(text: str) -> str:
+    """The text of a forward with the quote marks removed and nothing cut."""
+    lines = [_QUOTE_PREFIX.sub("", line) for line in text.split("\n")]
+    return _BLANK_RUN.sub("\n\n", "\n".join(lines)).strip()
 
 
 def build_inbound_payload(msg: EmailMessage, uid: int, limit: int) -> dict[str, Any]:
