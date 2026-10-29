@@ -54,7 +54,7 @@ def test_enroll_sends_mailbox_address_and_idle_flag(tmp_path, captured):
     assert captured["path"] == "/enroll"
     assert payload["mailboxAddress"] == "ask@corp.test"
     assert payload["idleSupported"] is True
-    assert payload["protocol"] == 1
+    assert payload["protocol"] == 2
     assert payload["version"] == __version__
     assert "providers" not in payload
     assert "Unmistakable-Pa55word" not in str(payload.values())

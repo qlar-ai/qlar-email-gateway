@@ -7,6 +7,51 @@ release version and is listed per release.
 
 ## [Unreleased]
 
+## [0.2.0] — unreleased
+<!-- set the release date when tagging -->
+
+Protocol 2. The change is additive: the gateway sends the same `/inbound` body as before, with
+`attachments[]` now filled in. **Update Qlar before running this release on a gateway**: a server
+that does not know `POST /attachments` would answer every upload with an error, and every email
+would then be forwarded with its attachments named but unreadable.
+
+### Added
+
+- **For operators:** 0.2.0 uploads attachments of forwarded emails to Qlar. There is no setting to
+  turn this off in 0.2.0.
+- **For operators:** a 0.2.0 gateway cannot be enrolled on a Qlar that does not yet speak protocol 2
+  (Qlar refuses the enrolment, the enrolment code is not used up, and the gateway reports a rejected
+  code). Update Qlar first, then enrol. Gateways that are already enrolled keep working but upload
+  attachments that an older Qlar ignores.
+- Inbound attachments. Files attached to an email are uploaded to Qlar (`POST /attachments`, signed,
+  see `docs/PROTOCOL.md` section 9) and their URLs are sent in `attachments[]`, so the agent can read
+  PDFs, text, markdown, Word (`.docx`), Excel (`.xlsx`) and CSV files (read as text) and look at JPEG,
+  PNG and WebP pictures. Older `.doc` and `.xls` files, macro-enabled files and PowerPoint files are
+  listed by name only. At most five files per email are uploaded, each up to 20 MB; the rest are
+  listed by name only. Inline `cid:` pictures (signature logos) are ignored.
+- Replies can carry pictures. A protocol 2 reply job lists its pictures (PNG, JPEG or WebP only; name,
+  type, size, SHA-256) under the job's signature; the gateway fetches each one with a signed
+  `GET /jobs/{jobId}/attachments/{index}`, checks length and SHA-256, and sends them inline with the
+  HTML (`cid:`). A picture that cannot be fetched or verified, or a job that declares any other type,
+  gets the reply sent without pictures. `docs/PROTOCOL.md` section 10.
+- A file that cannot be uploaded never holds back the email: it is forwarded with the file named and
+  no URL.
+
+### Changed
+
+- The gateway announces protocol `2` when it enrols and on every call.
+
+## [0.1.9] — 2026-10-26
+
+Protocol 1. Hosted worker and on-prem gateway share the change. Qlar (Messenger-BE) must be released
+first: it is what reads the new field, and it accepts emails without it.
+
+### Added
+
+- `POST /inbound` carries `headers.authenticationResults`, the topmost `Authentication-Results` header of
+  the email. Qlar uses it so a private channel does not trust a whitelisted address that the mailbox's own
+  server says was forged. Missing means unknown. See PROTOCOL.md §8.
+
 ## [0.1.8] — 2026-10-26
 
 Protocol 1. Hosted worker and on-prem gateway share the change; the server needs no change.

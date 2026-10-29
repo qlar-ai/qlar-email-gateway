@@ -10,7 +10,9 @@ every change is something a customer's security team may have to re-review.
 2. **Credentials stay here.** `MAIL_PASSWORD` is used for the IMAP and SMTP login and nowhere else:
    not in a log line, an exception message, the audit file or any request to Qlar.
 3. **The send guard is local and cannot be loosened by Qlar.** Nothing in a job may change `From`,
-   the recipient rule, the rate limit, or add attachments.
+   the recipient rule or the rate limit, or attach anything other than the PNG, JPEG or WebP pictures its
+   signed job declares (each fetched from Qlar and checked against its SHA-256). Any new kind of attachment,
+   inbound or outbound, needs a security review and a new release.
 4. **The mailbox is read, never changed.** Read-only `SELECT`, `BODY.PEEK[]`, no flags, no moves.
 5. **Few dependencies.** `cryptography`, `httpx`, `imapclient` and `beautifulsoup4`; adding one
    needs a good argument and a licence that is not copyleft.
@@ -38,7 +40,7 @@ list at once when the server closes the connection, rather than raising.
 
 `docs/PROTOCOL.md` is the contract with Qlar. Any change to what is signed, sent or expected is a
 protocol change: bump `PROTOCOL_VERSION`, update the document and the canonical-bytes tests on both
-sides (here and in Messenger-BE), and keep accepting the previous version on the server.
+sides (here and on the Qlar server), and keep accepting the previous version on the server.
 
 ## Releases
 

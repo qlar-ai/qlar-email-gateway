@@ -1,4 +1,4 @@
-# Qlar Email Gateway protocol, version 1
+# Qlar Email Gateway protocol, version 2
 
 This is the complete wire contract between the on-premise email gateway and Qlar. It is
 published so that anyone can audit it, or write their own gateway in another language
@@ -63,7 +63,7 @@ Every request carries five headers:
 | `X-Qlar-Timestamp` | Unix seconds, as a decimal string |
 | `X-Qlar-Nonce` | a fresh random value, single use |
 | `X-Qlar-Signature` | base64( DER( ECDSA-SHA256( canonical string ))) |
-| `X-Qlar-Protocol` | `1` |
+| `X-Qlar-Protocol` | `2` (`1` before release 0.2.0) |
 
 The canonical string is five fields joined by `\n`:
 
@@ -182,8 +182,8 @@ still signed with the key being registered, which proves the caller holds the pr
   "name": "support mailbox gateway",
   "hostname": "srv-mail-01",
   "platform": "Linux 5.15.0",
-  "version": "0.1.0",
-  "protocol": 1,
+  "version": "0.2.0",
+  "protocol": 2,
   "mailboxAddress": "ask@pelanggan.com",
   "idleSupported": true
 }
@@ -218,8 +218,8 @@ gateway at a time.
 
 ```json
 {
-  "version": "0.1.0",
-  "protocol": 1,
+  "version": "0.2.0",
+  "protocol": 2,
   "mailboxStatus": "ok",
   "lastUid": 4182,
   "maxWaitSeconds": 25
@@ -328,9 +328,10 @@ Nobody waits synchronously for a `send_email` result: Qlar records it when it ar
 
 ## 7. Versioning
 
-`X-Qlar-Protocol` and the job's `protocol` field carry the **contract** version (`1`); the
-release version (`0.1.0`) moves independently. Qlar accepts protocol `1` and above
-(`MinimumVersion = 1`). Adding an endpoint that older gateways never call does not bump the
+`X-Qlar-Protocol` and the job's `protocol` field carry the **contract** version; the
+release version moves independently. Release 0.2.0 speaks protocol `2`. Qlar accepts protocol `1`
+and above (`MinimumVersion = 1`), so a gateway on protocol `1` keeps working: it simply never
+uploads attachments. Adding an endpoint that older gateways never call does not bump the
 protocol.
 
 ---
@@ -355,13 +356,24 @@ arrives in the connected mailbox, one request per email, in IMAP UID order.
   "text": "Kalau paket B berapa?",
   "textTruncated": false,
   "attachments": [],
-  "headers": { "autoSubmitted": null, "precedence": null, "listId": null }
+  "headers": {
+    "autoSubmitted": null,
+    "precedence": null,
+    "listId": null,
+    "authenticationResults": "mx.example.com; dkim=pass; spf=pass; dmarc=pass header.from=example.com"
+  }
 }
 ```
 
 `attachments[]` items are `{fileName, contentType, sizeBytes, url}`. `replyTo` is a single bare
 address (`team@corp.com`, no display name) or `null`; Qlar falls back to `from.address` when it is
 not exactly one valid address. Header values must not contain CR or LF.
+
+`headers.authenticationResults` is the topmost `Authentication-Results` header of the email (the
+mailbox's own server writes it after checking SPF, DKIM and DMARC), collapsed to one line and cut
+at 2000 characters, or `null` when there is none. Qlar reads it to tell a forged `From` from a real
+one; `null` means unknown, never a failure. The field is optional: a gateway from before 0.1.9
+omits it and Qlar accepts that, so it does not change the protocol version.
 
 | Status | Meaning |
 |---|---|
@@ -379,3 +391,117 @@ Qlar derives the **thread key** from the first element of `references`, else `in
 the email's own `messageId` — trimmed, without `<>`, lowercased. An email with neither header
 joins an earlier thread from the same sender whose normalized subject (without `Re:`, `Fwd:`,
 `Bls:` …) matches, within 30 days.
+
+---
+
+## 9. Attachments
+
+From release 0.2.0 (protocol `2`) the gateway hands the files attached to an email to Qlar so the
+agent can read them. This means 0.2.0 uploads the attachments of forwarded emails to Qlar; there is
+no setting to turn this off in 0.2.0. Nothing else about `POST /inbound` changes: it is still one request per email,
+and `attachments[]` is still the list of `{fileName, contentType, sizeBytes, url}` items.
+
+### Which files
+
+- Parts sent as an attachment, and inline parts that have a file name and no `Content-ID`.
+  Inline pictures that the message body refers to with `cid:` (signature logos and the like) are
+  ignored: they are not uploaded and not listed.
+- Only the **first five** files of an email, in the order they appear, are uploaded. Further files
+  are listed with an empty `url`.
+- A file larger than 20 MB, or of a type Qlar does not read, is listed with an empty `url` and its
+  bytes are not sent. Qlar reads JPEG, PNG and WebP images, and `.pdf`, `.txt`, `.md`, `.docx`,
+  `.xlsx` and `.csv` files (Word, Excel and CSV files are read as text). Older `.doc` and `.xls`
+  files, macro-enabled `.docm` and `.xlsm` files and PowerPoint files are not read: they are listed by
+  name only. The type is judged by the file extension, so a CSV that a mail program labels
+  `application/vnd.ms-excel` is still sent.
+- File names are sent without any folder part, at most 255 characters (the extension is kept); non-ASCII
+  names are decoded first. Attached emails (`message/rfc822`) are not uploaded and their contents are not
+  listed.
+
+### Upload
+
+For each file to upload, before the email's own `POST /inbound`:
+
+```
+POST /attachments?messageId=<id>&fileName=<name>&from=<sender address>
+Content-Type: <the file's own MIME type>
+
+<the raw bytes of the file>
+```
+
+Every query value is percent-encoded, leaving only the unreserved characters (`A-Z a-z 0-9 - . _ ~`)
+as they are. `messageId` is exactly the `messageId` that will be sent in the `/inbound` body, byte
+for byte. The request is signed like every other call (§2); the signed path is `/attachments`
+**followed by the query string exactly as sent**, and the body hash is the hash of the file's bytes.
+
+| Answer | Meaning |
+|---|---|
+| `200 {"url": "https://..."}` | stored. Put this `url`, unchanged, in the file's `attachments[]` item |
+| `200 {"enabled": false, "url": "", "reason": "..."}` | refused (`unsupported-type`, `too-large`, `deactivated`, `unreadable`). List the file with an empty `url` |
+| any other status (`401`, `403`, `413`, `5xx`, ...) | not stored. List the file with an empty `url` |
+
+A failed upload is not retried; the file is named in the message. When Qlar cannot be reached, or the
+gateway is still waiting for approval, the remaining files of that email are not tried either.
+
+A file that could not be uploaded never stops the email: it is forwarded with the file named and an
+empty `url`, and `lastUid` advances after `/inbound` answers `202` as usual. The one exception is a
+`403` that says the gateway is revoked or no longer exists, which stops the gateway as in §4.
+
+Qlar accepts a `url` in `/inbound` only if it handed that `url` out for the same gateway and the same
+`messageId`, so the gateway must pass back exactly what it was given.
+
+---
+
+## 10. Attachments, outbound
+
+From release 0.2.0 (protocol `2`) a `send_email` job may carry pictures, for example a chart the agent
+drew. A job that carries none is exactly the job of protocol `1` (its `protocol` field stays `1`).
+
+### In the job
+
+A job with pictures has `"protocol": 2` and an `attachments` array (between `conversationId` and
+`signature`), at most five items:
+
+```json
+{ "fileName": "sales-chart.png", "contentType": "image/png", "sizeBytes": 48211,
+  "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "contentId": "0123456789abcdef0123456789abcdef@qlar" }
+```
+
+`sha256` is lower-case hex. `contentId` (without angle brackets) is set for a picture the HTML shows
+with `<img src="cid:...">`; it is `null` or absent for an ordinary (non-inline) attachment. `contentType` must be exactly
+`image/png`, `image/jpeg` or `image/webp`: a job that declares any other type, in either kind of
+attachment, is treated as invalid and its reply is sent without pictures. A new attachment type
+needs a new gateway release.
+
+### What the signature covers
+
+The canonical form of §2 is unchanged. If, and only if, `attachments` is not empty, one more line is
+appended after a newline: the base64 (with padding) SHA-256 of one line per attachment, in array order,
+joined by newlines. Each line is `fileName`, `contentType`, `contentId` (empty when null or absent),
+`sha256` and `sizeBytes`, joined by tab characters. Changing any field of any attachment therefore
+invalidates the signature.
+
+### Fetching the bytes
+
+```
+GET /jobs/{jobId}/attachments/{index}
+```
+
+`index` is the 0-based position in `attachments`. The request has no body and is signed like every call
+(§2): the signed path is the path above, relative to the API root, and the body hash is the hash of an
+empty body. Every request needs a fresh nonce. `200` carries the raw bytes. The gateway accepts them only
+if their length equals `sizeBytes` and their SHA-256 equals `sha256`; each picture may be at most 8 MB and
+all of them together at most 15 MB. `404` means the picture is no longer available. The gateway
+stops downloading as soon as more than `sizeBytes` bytes arrive (or `Content-Length` says so), and
+refuses a job whose fields are not of the expected form: `jobId` is `job_` and 32 lower-case hex characters, `fileName` is 1 to 100 letters, digits, `.`, `_`, `-`
+or spaces, `contentType` is `image/png`, `image/jpeg` or `image/webp`, and `contentId` is 32 lower-case hex characters
+followed by `@qlar`. One invalid item means the reply is sent without any of the pictures.
+
+### When a picture is missing
+
+A picture that cannot be fetched or verified is skipped: nothing partial is attached, the
+`<img src="cid:...">` tags are removed from the HTML, and the reply is still sent with its text. The
+gateway records `attachments_skipped` in its audit log. The reply's `Content-ID` header is the `contentId`
+in angle brackets, and the picture is sent inline, related to the HTML part. A picture with no `contentId` is sent as
+an ordinary attachment with its `fileName`; it is limited to the same picture types.

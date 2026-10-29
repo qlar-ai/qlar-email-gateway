@@ -20,15 +20,16 @@ keys in your report — a redacted description is always enough to start.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | yes |
+| 0.2.x | yes |
+| 0.1.x | no |
 
 While the project is pre-1.0, security fixes go to the latest minor release only.
 
 ## Scope
 
 In scope: anything that lets a job send mail the send guard should have refused (another
-recipient, another `From`, an attachment, past the rate limit), makes the gateway change the
-mailbox (mark, move or delete mail), lets anyone impersonate a gateway or Qlar, bypasses
+recipient, another `From`, an attachment that is not a PNG, JPEG or WebP picture declared by the signed job or that fails
+its SHA-256 check, past the rate limit), makes the gateway change the mailbox (mark, move or delete mail), lets anyone impersonate a gateway or Qlar, bypasses
 signature or replay protection, or extracts the private key or the mailbox password from the
 process, its logs or its audit file.
 
@@ -44,7 +45,7 @@ Every release publishes SHA-256 checksums alongside the artifacts. Check them be
 installing:
 
 ```bash
-sha256sum -c qlar_email_gateway-0.1.0.sha256
+sha256sum -c qlar_email_gateway-0.2.0.sha256
 ```
 
 Docker images are published to `ghcr.io/qlar-ai/email-gateway` and can be pinned by digest.

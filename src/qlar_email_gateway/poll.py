@@ -35,8 +35,9 @@ from .client import (
     Revoked,
     stop_reason,
 )
-from .config import MAX_CONCURRENT_JOBS, EnrollmentState, MailSettings, Settings
+from .config import MAX_CONCURRENT_JOBS, EnrollmentState, Settings
 from .crypto import load_or_create_private_key, verify_job
+from .job_attachments import fetch_job_attachments
 from .send_guard import SendGuard
 from .sender import SmtpSendError, send_reply
 from .status import MailboxStatus
@@ -78,7 +79,7 @@ class PollLoop:
         status: MailboxStatus | None = None,
         guard: SendGuard | None = None,
         audit: AuditLog | None = None,
-        sender: Callable[[MailSettings, dict[str, Any]], str] = send_reply,
+        sender: Callable[..., str] = send_reply,
         mailbox_tester: Callable[[Settings], dict[str, Any]] | None = None,
         executor: ThreadPoolExecutor | None = None,
     ) -> None:
@@ -274,6 +275,11 @@ class PollLoop:
                 self._send_result(
                     job_id, _error("rejected", "unknown_job_type", f"unknown job type {job_type!r}")
                 )
+        except Revoked as revoked:
+            # Found out while fetching a picture: stop exactly as when a poll is refused.
+            logger.error("this gateway has been revoked or deleted in the Qlar CMS; stopping")
+            self.stopped_by = revoked
+            self._stopping.set()
         except Exception as error:  # noqa: BLE001 - a worker must never die silently
             logger.exception("job %s failed unexpectedly", job_id)
             self._send_result(
@@ -292,7 +298,15 @@ class PollLoop:
             return
 
         try:
-            message_id = self._send(self.settings.mail, job)
+            if job.get("attachments"):
+                # After the guard (a refused reply fetches nothing); before sending. A picture that
+                # cannot be fetched or verified is left out and the reply still goes.
+                attachments = fetch_job_attachments(self.client, job)
+                if attachments is None:
+                    self._audit_job(job, "attachments_skipped", reason="fetch_or_verify_failed")
+                message_id = self._send(self.settings.mail, job, attachments=attachments)
+            else:
+                message_id = self._send(self.settings.mail, job)
         except SmtpSendError as error:
             logger.warning("reply %s could not be sent: %s (%s)", job_id, error.category, error.code)
             self._audit_job(

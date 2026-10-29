@@ -1,8 +1,6 @@
 # Releasing
 
-How a version of the gateway is cut and published. The deployment runbook for the Qlar
-side lives in the `Messenger-BE` repository
-(`docs/email-gateway-runbook.md`); this page covers only this repository.
+How a version of the gateway is cut and published. This page covers only this repository.
 
 ## The ordering rule
 
@@ -22,7 +20,7 @@ Two of them, deliberately independent:
 
 - **Release version** (`0.1.0`) — lives in `src/qlar_email_gateway/__init__.py` as
   `__version__`, and `pyproject.toml` reads it from there. That is the only place to edit.
-- **Protocol version** (`PROTOCOL_VERSION`, currently `1`) — the wire contract. A bug fix
+- **Protocol version** (`PROTOCOL_VERSION`, currently `2`) — the wire contract. A bug fix
   or a new command does **not** bump it. Only an incompatible change to the protocol does,
   and that needs a migration plan, because the fleet runs inside customer networks and
   upgrades on their schedule, not ours.
@@ -63,8 +61,12 @@ the artifacts attached.
    docker run --rm ghcr.io/qlar-ai/email-gateway:0.1.0 version
    sha256sum -c qlar_email_gateway-0.1.0.sha256
    ```
-8. **Point the CMS download page at the new release** and check that the version it
-   advertises matches.
+8. **Raise the version in the Qlar console's install panel to the new release.** Every
+   release needs this, not only the big ones: the panel builds the Docker and pip commands
+   that self-hosted customers copy from the version it names, so a release that is not
+   reflected there is never installed by new customers. Do it only after the release is
+   published (the commands must name a release that exists), then check that the version
+   the panel prints matches the tag. Qlar-run hosted workers do not read this version.
 
 ## After a release
 

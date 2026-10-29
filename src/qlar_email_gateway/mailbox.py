@@ -37,6 +37,7 @@ from imapclient import IMAPClient
 from imapclient.exceptions import LoginError
 
 from . import status as mailbox_status
+from .attachments import collect_attachments, upload_all
 from .audit import AuditLog
 from .client import QlarRejected, QlarUnreachable, Revoked, stop_reason
 from .config import EnrollmentState, MailSettings, Settings
@@ -320,6 +321,7 @@ class MailboxWatcher:
                 if reason is not None
                 else build_inbound_payload(msg, uid, self.settings.max_inbound_text_chars)
             )
+            files = collect_attachments(msg) if payload is not None else []
         except Exception as error:  # noqa: BLE001 - any parse failure is this email's problem only
             logger.warning("email UID %d could not be read (%s); skipped", uid, type(error).__name__)
             self.audit.record(status="unparseable", uid=uid, reason=type(error).__name__)
@@ -330,6 +332,13 @@ class MailboxWatcher:
             self.audit.record(status="filtered", reason=reason, uid=uid, **description)
             self._advance(uid)
             return
+
+        if files:
+            # Outside the parse guard above on purpose: a revoked gateway must still stop here. Any
+            # other upload problem is absorbed by upload_all and costs only that attachment.
+            payload["attachments"] = upload_all(
+                self.client, payload["messageId"], payload["from"]["address"], files
+            )
 
         if self._forward(payload):
             self.audit.record(status="forwarded", uid=uid, **description)

@@ -26,13 +26,13 @@ mailbox questions once, interactively. The answers are written to `state/.env` o
 mkdir qlar-email-gateway && cd qlar-email-gateway
 echo QLAR_BASE_URL=<the URL the CMS shows> >> .env
 echo QLAR_ENROLLMENT_CODE=<the code the CMS shows> >> .env
-docker run -it --rm --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.1.3 --env-file /state/.env test-mailbox --init
+docker run -it --rm --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.2.0 --env-file /state/.env test-mailbox --init
 ```
 
 That tests the IMAP and SMTP login without contacting Qlar. Then start it for good:
 
 ```bash
-docker run -d --name qlar-email-gateway --restart unless-stopped   --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.1.3 --env-file /state/.env enroll
+docker run -d --name qlar-email-gateway --restart unless-stopped   --env-file .env -v "$PWD/state:/state"   ghcr.io/qlar-ai/email-gateway:0.2.0 --env-file /state/.env enroll
 docker logs -f qlar-email-gateway
 ```
 
@@ -51,7 +51,7 @@ read-only root filesystem.
 
 ```bash
 python3 -m venv /opt/qlar-email-gateway
-/opt/qlar-email-gateway/bin/pip install "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.1.3/qlar_email_gateway-0.1.3-py3-none-any.whl"
+/opt/qlar-email-gateway/bin/pip install "qlar-email-gateway @ https://github.com/qlar-ai/qlar-email-gateway/releases/download/v0.2.0/qlar_email_gateway-0.2.0-py3-none-any.whl"
 cd /etc/qlar-email-gateway
 /opt/qlar-email-gateway/bin/qlar-email-gateway enroll --base-url <URL> --code <CODE>
 ```
@@ -96,7 +96,7 @@ On Windows, run the same `pip install` in a virtual environment and start
 
 | Symptom | Cause and fix |
 |---|---|
-| `enrolment code is not valid` | Codes are single use and expire after 15 minutes. Generate a new one |
+| `enrolment code is not valid` | Codes are single use and expire after 15 minutes. Generate a new one. If enrolment is rejected even with a fresh code, check that your Qlar has been updated to a version that supports protocol 2 |
 | Enrolment says the URL is not Qlar's API | `QLAR_BASE_URL` must be the API URL from the CMS panel, ending in `/api/email-gateway` |
 | `401 clock_skew` | This machine's clock is more than two minutes off. Fix NTP |
 | `waiting for approval` | Expected. Compare the fingerprint and click Approve in the CMS |

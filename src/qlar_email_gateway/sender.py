@@ -2,12 +2,15 @@
 
 What the job may decide: the recipient (already checked by the send guard), the subject, the
 threading headers and the two bodies. What it may not: `From` is always the configured mailbox,
-there are never attachments, and every reply carries `Auto-Submitted: auto-replied` so that other
-well-behaved systems do not answer it back.
+attachments are only the pictures the signed job declares, each verified by its SHA-256 before it is
+attached (a picture that cannot be verified is left out, never sent unchecked), and every reply
+carries `Auto-Submitted: auto-replied` so that other well-behaved systems do not answer it back.
 """
 
 from __future__ import annotations
 
+import logging
+import re
 import smtplib
 import ssl
 import uuid
@@ -18,8 +21,38 @@ from email.utils import formataddr, formatdate
 from typing import Any
 
 from .config import MailSettings
+from .job_attachments import Fetched
+
+logger = logging.getLogger("qlar_email_gateway.sender")
 
 SMTP_TIMEOUT_SECONDS = 30
+# An attribute value or any other character inside a tag; quoted values may contain `>`.
+_TAG_CHAR = r"""(?:[^>"']|"[^"]*"|'[^']*')"""
+#: An <img> whose src is a cid: URL: either quote style or none, spaces around `=`, any attribute order.
+_CID_IMG = re.compile(
+    rf"""<img\b{_TAG_CHAR}*?(?<![\w-])src\s*=\s*(?:"cid:[^"]*"|'cid:[^']*'|cid:[^\s>]*){_TAG_CHAR}*>""",
+    re.IGNORECASE,
+)
+#: Fallback: any tag that still mentions cid:, then any bare mention.
+# `cid:` as a URL scheme, not the end of a word such as "acid:" or "lucid:".
+_CID_ANY = re.compile(r"(?<![A-Za-z0-9])cid:", re.IGNORECASE)
+_CID_TAG = re.compile(rf"""<{_TAG_CHAR}*?(?<![A-Za-z0-9])cid:{_TAG_CHAR}*>""", re.IGNORECASE)
+_CID_MENTION = re.compile(r"(?<![A-Za-z0-9])cid:[^\s\"'<>)]*", re.IGNORECASE)
+
+
+def strip_cid_images(html: str) -> str:
+    """The HTML without its `<img src="cid:...">` tags, and with no `cid:` reference left at all.
+
+    Used when the pictures those tags point at could not be attached: a mail client would show a
+    broken image for each one. The first pass is the exact tag; the later passes exist so that an
+    unusual spelling can never leave a dangling reference behind.
+    """
+    html = _CID_IMG.sub("", html)
+    if _CID_ANY.search(html):
+        html = _CID_TAG.sub("", html)
+    if _CID_ANY.search(html):
+        html = _CID_MENTION.sub("", html)
+    return html
 
 
 class SmtpSendError(Exception):
@@ -31,7 +64,38 @@ class SmtpSendError(Exception):
         self.code = code
 
 
-def build_reply(mail: MailSettings, job: dict[str, Any], message_id: str) -> EmailMessage:
+def build_reply(
+    mail: MailSettings,
+    job: dict[str, Any],
+    message_id: str,
+    attachments: list[Fetched] | None = None,
+) -> EmailMessage:
+    """The reply as a MIME message.
+
+    `attachments` are the verified files of a job that declared some. Pictures with a content id go
+    inline, related to the HTML part; the others are ordinary attachments. When the job declared
+    attachments but they could not be fetched (`attachments is None`), the reply goes without them
+    and without the `<img src="cid:...">` tags that pointed at them.
+    """
+    declared = bool(job.get("attachments"))
+    if attachments:
+        try:
+            return _build(mail, job, message_id, attachments, strip_cid=False)
+        except Exception as error:  # noqa: BLE001 - a picture must never cost the reply
+            logger.warning(
+                "the reply's attachments could not be built (%s); sending without them", type(error).__name__
+            )
+    return _build(mail, job, message_id, None, strip_cid=declared)
+
+
+def _build(
+    mail: MailSettings,
+    job: dict[str, Any],
+    message_id: str,
+    attachments: list[Fetched] | None,
+    *,
+    strip_cid: bool,
+) -> EmailMessage:
     msg = EmailMessage()
     msg["From"] = formataddr((mail.from_name, mail.address)) if mail.from_name else mail.address
     msg["To"] = ", ".join(str(address) for address in job.get("to") or [])
@@ -49,16 +113,42 @@ def build_reply(mail: MailSettings, job: dict[str, Any], message_id: str) -> Ema
 
     msg.set_content(str(job.get("textBody") or ""))
     html = str(job.get("htmlBody") or "")
+    if strip_cid:
+        html = strip_cid_images(html)
     if html:
         msg.add_alternative(html, subtype="html")
+
+    inline = [item for item in attachments or [] if item.content_id]
+    plain = [item for item in attachments or [] if not item.content_id]
+    if inline and html:
+        html_part = msg.get_body(("html",))
+        for item in inline:
+            maintype, _, subtype = item.content_type.partition("/")
+            html_part.add_related(  # type: ignore[union-attr]
+                item.data,
+                maintype=maintype,
+                subtype=subtype,
+                cid=f"<{item.content_id}>",
+                disposition="inline",
+                filename=item.file_name,
+            )
+    else:
+        plain = [*inline, *plain]
+    for item in plain:
+        maintype, _, subtype = item.content_type.partition("/")
+        msg.add_attachment(
+            item.data, maintype=maintype, subtype=subtype, filename=item.file_name, disposition="attachment"
+        )
     return msg
 
 
-def send_reply(mail: MailSettings, job: dict[str, Any]) -> str:
+def send_reply(
+    mail: MailSettings, job: dict[str, Any], attachments: list[Fetched] | None = None
+) -> str:
     """Sends the reply and returns the Message-ID it was sent with."""
     domain = mail.address.rpartition("@")[2] or "localhost"
     message_id = f"<qlar-{uuid.uuid4().hex}@{domain}>"
-    msg = build_reply(mail, job, message_id)
+    msg = build_reply(mail, job, message_id, attachments)
     recipients = [str(address) for address in job.get("to") or []]
 
     with _smtp_errors():
