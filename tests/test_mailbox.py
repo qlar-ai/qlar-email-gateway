@@ -366,6 +366,26 @@ def test_revoked_during_upload_stops_without_advancing(tmp_path):
     assert harness.state.last_uid == 10
 
 
+def test_inbound_payload_carries_both_authentication_results_and_attachments(tmp_path):
+    msg = EmailMessage()
+    msg["From"] = "Sender <sender11@customer.test>"
+    msg["To"] = MAILBOX
+    msg["Subject"] = "Question 11"
+    msg["Date"] = "Wed, 07 Oct 2026 09:00:00 +0000"
+    msg["Message-ID"] = "<m11@customer.test>"
+    msg["Authentication-Results"] = "mx.corp.test; dkim=pass; spf=pass; dmarc=pass"
+    msg.set_content("Body")
+    msg.add_attachment(b"%PDF", maintype="application", subtype="pdf", filename="offer.pdf")
+    harness = Harness(tmp_path, FakeImap({11: msg.as_bytes()}))
+
+    harness.run_until_poll_wait()
+
+    payload = harness.qlar.posts[0]
+    assert payload["headers"]["authenticationResults"] == "mx.corp.test; dkim=pass; spf=pass; dmarc=pass"
+    assert [a["fileName"] for a in payload["attachments"]] == ["offer.pdf"]
+    assert payload["attachments"][0]["url"].startswith("https://")
+
+
 def test_email_without_attachments_uploads_nothing(tmp_path):
     harness = Harness(tmp_path, FakeImap({11: raw_email(11)}))
 
