@@ -19,6 +19,7 @@ File names and sender addresses are never logged here.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from email.message import Message
@@ -38,6 +39,7 @@ MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_NAME_CHARS = 255
 UPLOAD_TIMEOUT_SECONDS = 120.0
 
+_MIME_TOKEN = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
 _IMAGE_TYPES = frozenset({"image/jpeg", "image/jpg", "image/png", "image/webp"})
 _SUPPORTED_EXTENSIONS = (
     ".pdf",
@@ -85,7 +87,7 @@ def collect_attachments(msg: Message) -> list[Attachment]:
     Parts marked `attachment`, plus `inline` parts that have a file name and no `Content-ID`.
     An inline part that other parts refer to by `cid:` (a signature logo, a picture in the body)
     is part of the message's look, not a file the sender sent, so it is ignored entirely. An
-    attached email (`message/rfc822`) is neither collected nor looked into.
+    attached message (any `message/*` part) is neither collected nor looked into.
 
     Decoding is lazy: only a file that can actually be uploaded (one of the first five, a type
     Qlar reads, not over 20 MB) is decoded. Every other file is listed with an estimated size and
@@ -95,7 +97,7 @@ def collect_attachments(msg: Message) -> list[Attachment]:
     for part in _walk(msg):
         file_name = ""
         try:
-            if part.is_multipart() or part.get_content_type() == "message/rfc822":
+            if part.is_multipart() or part.get_content_maintype() == "message":
                 continue
             disposition = part.get_content_disposition()
             raw_name = part.get_filename()
@@ -146,10 +148,10 @@ def upload_all(
 
 
 def _walk(part: Message) -> Iterator[Message]:
-    """Every part of a message, but never inside an attached `message/rfc822`."""
+    """Every part of a message, but never inside an attached message (any `message/*` part)."""
     yield part
     try:
-        if not part.is_multipart() or part.get_content_type() == "message/rfc822":
+        if not part.is_multipart() or part.get_content_maintype() == "message":
             return
         children = part.get_payload()
     except Exception:  # noqa: BLE001 - a broken container has no readable children
@@ -160,7 +162,7 @@ def _walk(part: Message) -> Iterator[Message]:
 
 
 def _collect_part(part: Message, file_name: str, position: int) -> Attachment:
-    content_type = part.get_content_type()
+    content_type = _safe_content_type(part.get_content_type())
     estimate = _estimated_size(part)
     if (
         position >= MAX_UPLOADED_ATTACHMENTS
@@ -199,6 +201,10 @@ def _upload(
     except httpx.InvalidURL:
         logger.warning("attachment %d was not uploaded: the request address was invalid", position + 1)
         return "", False
+    except Exception as error:  # noqa: BLE001 - anything unexpected costs this file, never the watcher
+        # Revoked/Deleted are raised in the QlarRejected branch above and are not caught here.
+        logger.warning("attachment %d was not uploaded (%s)", position + 1, type(error).__name__)
+        return "", False
 
     url = body.get("url")
     if body.get("enabled") is False or not isinstance(url, str) or not url:
@@ -216,6 +222,17 @@ def _supported(file_name: str, content_type: str) -> bool:
     if content_type.lower() in _IMAGE_TYPES:
         return True
     return file_name.lower().endswith(_SUPPORTED_EXTENSIONS)
+
+
+def _safe_content_type(value: str) -> str:
+    """The part's own MIME type if it is a plain ASCII token, else a generic one.
+
+    The type becomes the HTTP `Content-Type` of the upload, and an email can declare anything:
+    non-ASCII bytes or control characters there must never reach the HTTP layer. A generic type
+    makes Qlar judge the file by its extension.
+    """
+    token = value.strip().lower()
+    return token if _MIME_TOKEN.fullmatch(token) else "application/octet-stream"
 
 
 def _encode(value: str) -> str:

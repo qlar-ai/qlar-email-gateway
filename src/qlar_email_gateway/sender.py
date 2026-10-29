@@ -34,8 +34,10 @@ _CID_IMG = re.compile(
     re.IGNORECASE,
 )
 #: Fallback: any tag that still mentions cid:, then any bare mention.
-_CID_TAG = re.compile(rf"""<{_TAG_CHAR}*?cid:{_TAG_CHAR}*>""", re.IGNORECASE)
-_CID_MENTION = re.compile(r"cid:[^\s\"'<>)]*", re.IGNORECASE)
+# `cid:` as a URL scheme, not the end of a word such as "acid:" or "lucid:".
+_CID_ANY = re.compile(r"(?<![A-Za-z0-9])cid:", re.IGNORECASE)
+_CID_TAG = re.compile(rf"""<{_TAG_CHAR}*?(?<![A-Za-z0-9])cid:{_TAG_CHAR}*>""", re.IGNORECASE)
+_CID_MENTION = re.compile(r"(?<![A-Za-z0-9])cid:[^\s\"'<>)]*", re.IGNORECASE)
 
 
 def strip_cid_images(html: str) -> str:
@@ -46,9 +48,9 @@ def strip_cid_images(html: str) -> str:
     unusual spelling can never leave a dangling reference behind.
     """
     html = _CID_IMG.sub("", html)
-    if "cid:" in html.lower():
+    if _CID_ANY.search(html):
         html = _CID_TAG.sub("", html)
-    if "cid:" in html.lower():
+    if _CID_ANY.search(html):
         html = _CID_MENTION.sub("", html)
     return html
 
