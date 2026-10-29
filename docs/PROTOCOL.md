@@ -182,7 +182,7 @@ still signed with the key being registered, which proves the caller holds the pr
   "name": "support mailbox gateway",
   "hostname": "srv-mail-01",
   "platform": "Linux 5.15.0",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 1,
   "mailboxAddress": "ask@pelanggan.com",
   "idleSupported": true
@@ -218,7 +218,7 @@ gateway at a time.
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 1,
   "mailboxStatus": "ok",
   "lastUid": 4182,

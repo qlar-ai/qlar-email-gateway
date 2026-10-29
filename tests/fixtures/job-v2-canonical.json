@@ -1,0 +1,42 @@
+{
+  "description": "Shared cross-repo fixture: a protocol 2 job and the exact canonical bytes (base64) its signature covers. Computed with hashlib only.",
+  "job": {
+    "jobId": "job_0123456789abcdef0123456789abcdef",
+    "type": "send_email",
+    "protocol": 2,
+    "to": [
+      "Budi@Customer.test"
+    ],
+    "subject": "Re: Harga paket",
+    "inReplyTo": "<m1@customer.test>",
+    "references": [
+      "<root@customer.test>",
+      "<m1@customer.test>"
+    ],
+    "textBody": "Halo Budi,\nini grafiknya.",
+    "htmlBody": "<p>Halo Budi</p><img src=\"cid:0123456789abcdef0123456789abcdef@qlar\">",
+    "issuedAt": "2026-10-29T10:00:00Z",
+    "expiresAt": "2026-10-29T10:10:00Z",
+    "agentId": "agt_1",
+    "userId": "budi@customer.test",
+    "conversationId": "root@customer.test",
+    "attachments": [
+      {
+        "fileName": "sales chart.png",
+        "contentType": "image/png",
+        "sizeBytes": 48211,
+        "sha256": "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed",
+        "contentId": "0123456789abcdef0123456789abcdef@qlar"
+      },
+      {
+        "fileName": "photo two.jpg",
+        "contentType": "image/jpeg",
+        "sizeBytes": 7,
+        "sha256": "3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3",
+        "contentId": null
+      }
+    ],
+    "signature": "(not part of the canonical bytes)"
+  },
+  "canonicalBytesBase64": "am9iXzAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmCnNlbmRfZW1haWwKMgpidWRpQGN1c3RvbWVyLnRlc3QKUmU6IEhhcmdhIHBha2V0CjxtMUBjdXN0b21lci50ZXN0Pgo8cm9vdEBjdXN0b21lci50ZXN0Piw8bTFAY3VzdG9tZXIudGVzdD4KbXJVM2lQdjhOSnNJUUFrZGNEc1lrN0JHUTE3a1VRelFMaGxONWRZMDN3WT0KcmMwK3pKNmwrL0F1RXJGVVZLNGJFRTdHRVB5bWl0bVFDTEY2UVNkTTBSdz0KMjAyNi0xMC0yOVQxMDowMDowMFoKMjAyNi0xMC0yOVQxMDoxMDowMFoKYWd0XzEKYnVkaUBjdXN0b21lci50ZXN0CnJvb3RAY3VzdG9tZXIudGVzdApYUGNLalRtRi93SUhSVW5WOUM3RjgvWjNQRDFXT2psNVlQQmJxOWFyK1hFPQ=="
+}

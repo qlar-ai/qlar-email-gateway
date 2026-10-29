@@ -449,3 +449,12 @@ def test_poll_announces_protocol_2(harness):
     path, payload = harness.posts[0]
     assert path == "/jobs/poll"
     assert payload["protocol"] == 2
+
+
+def test_canonical_bytes_match_the_shared_fixture():
+    import json
+    from pathlib import Path
+
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "job-v2-canonical.json").read_text("utf-8"))
+
+    assert canonical_job_bytes(fixture["job"]) == base64.b64decode(fixture["canonicalBytesBase64"])

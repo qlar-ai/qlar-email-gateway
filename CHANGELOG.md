@@ -8,6 +8,7 @@ release version and is listed per release.
 ## [Unreleased]
 
 ## [0.2.0] — unreleased
+<!-- set the release date when tagging -->
 
 Protocol 2. The change is additive: the gateway sends the same `/inbound` body as before, with
 `attachments[]` now filled in. **Update Qlar before running this release on a gateway**: a server
@@ -18,6 +19,9 @@ would then be forwarded with its attachments named but unreadable.
 
 - **For operators:** 0.2.0 uploads attachments of forwarded emails to Qlar. There is no setting to
   turn this off in 0.2.0.
+- **For operators:** a 0.2.0 gateway cannot be enrolled on a Qlar that does not yet speak protocol 2
+  (enrolment fails with a clear message); gateways that are already enrolled keep working but upload
+  attachments that an older Qlar ignores. Update Qlar first.
 - Inbound attachments. Files attached to an email are uploaded to Qlar (`POST /attachments`, signed,
   see `docs/PROTOCOL.md` section 9) and their URLs are sent in `attachments[]`, so the agent can read
   PDFs, text, markdown, Word (`.docx`), Excel (`.xlsx`) and CSV files (read as text) and look at JPEG,

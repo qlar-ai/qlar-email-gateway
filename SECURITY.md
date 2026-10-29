@@ -20,7 +20,8 @@ keys in your report — a redacted description is always enough to start.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | yes |
+| 0.2.x | yes |
+| 0.1.x | no |
 
 While the project is pre-1.0, security fixes go to the latest minor release only.
 
@@ -44,7 +45,7 @@ Every release publishes SHA-256 checksums alongside the artifacts. Check them be
 installing:
 
 ```bash
-sha256sum -c qlar_email_gateway-0.1.0.sha256
+sha256sum -c qlar_email_gateway-0.2.0.sha256
 ```
 
 Docker images are published to `ghcr.io/qlar-ai/email-gateway` and can be pinned by digest.

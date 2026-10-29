@@ -40,7 +40,7 @@ list at once when the server closes the connection, rather than raising.
 
 `docs/PROTOCOL.md` is the contract with Qlar. Any change to what is signed, sent or expected is a
 protocol change: bump `PROTOCOL_VERSION`, update the document and the canonical-bytes tests on both
-sides (here and in Messenger-BE), and keep accepting the previous version on the server.
+sides (here and on the Qlar server), and keep accepting the previous version on the server.
 
 ## Releases
 
