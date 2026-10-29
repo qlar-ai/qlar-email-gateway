@@ -216,7 +216,7 @@ def test_smtp_auth_error_reports_auth(harness):
 
 
 def test_newer_protocol_job_is_rejected(harness):
-    harness.poll_answer = (200, {"job": harness.job(protocol=2)})
+    harness.poll_answer = (200, {"job": harness.job(protocol=3)})
 
     assert harness.loop._poll_once() is None
     assert harness.results()[-1]["error"]["category"] == "rejected"
@@ -253,7 +253,7 @@ def test_poll_body_carries_mailbox_status_and_last_uid(harness):
     assert path == "/jobs/poll"
     assert body["mailboxStatus"] == "idle_unsupported"
     assert body["lastUid"] == 4182
-    assert body["protocol"] == 1
+    assert body["protocol"] == 2
     assert body["maxWaitSeconds"] == 25
 
 

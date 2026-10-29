@@ -328,9 +328,10 @@ Nobody waits synchronously for a `send_email` result: Qlar records it when it ar
 
 ## 7. Versioning
 
-`X-Qlar-Protocol` and the job's `protocol` field carry the **contract** version (`1`); the
-release version (`0.1.0`) moves independently. Qlar accepts protocol `1` and above
-(`MinimumVersion = 1`). Adding an endpoint that older gateways never call does not bump the
+`X-Qlar-Protocol` and the job's `protocol` field carry the **contract** version; the
+release version moves independently. Release 0.2.0 speaks protocol `2`. Qlar accepts protocol `1`
+and above (`MinimumVersion = 1`), so a gateway on protocol `1` keeps working: it simply never
+uploads attachments. Adding an endpoint that older gateways never call does not bump the
 protocol.
 
 ---
@@ -390,3 +391,51 @@ Qlar derives the **thread key** from the first element of `references`, else `in
 the email's own `messageId` — trimmed, without `<>`, lowercased. An email with neither header
 joins an earlier thread from the same sender whose normalized subject (without `Re:`, `Fwd:`,
 `Bls:` …) matches, within 30 days.
+
+---
+
+## 9. Attachments
+
+From release 0.2.0 (protocol `2`) the gateway hands the files attached to an email to Qlar so the
+agent can read them. Nothing else about `POST /inbound` changes: it is still one request per email,
+and `attachments[]` is still the list of `{fileName, contentType, sizeBytes, url}` items.
+
+### Which files
+
+- Parts sent as an attachment, and inline parts that have a file name and no `Content-ID`.
+  Inline pictures that the message body refers to with `cid:` (signature logos and the like) are
+  ignored: they are not uploaded and not listed.
+- Only the **first five** files of an email, in the order they appear, are uploaded. Further files
+  are listed with an empty `url`.
+- A file larger than 20 MB, or of a type Qlar does not read, is listed with an empty `url` and its
+  bytes are not sent. Supported: JPEG, PNG and WebP images, and `.pdf`, `.txt` and `.md` files.
+- File names are sent without any folder part; non-ASCII names are decoded first.
+
+### Upload
+
+For each file to upload, before the email's own `POST /inbound`:
+
+```
+POST /attachments?messageId=<id>&fileName=<name>&from=<sender address>
+Content-Type: <the file's own MIME type>
+
+<the raw bytes of the file>
+```
+
+Every query value is percent-encoded, leaving only the unreserved characters (`A-Z a-z 0-9 - . _ ~`)
+as they are. `messageId` is exactly the `messageId` that will be sent in the `/inbound` body, byte
+for byte. The request is signed like every other call (§2); the signed path is `/attachments`
+**followed by the query string exactly as sent**, and the body hash is the hash of the file's bytes.
+
+| Answer | Meaning |
+|---|---|
+| `200 {"url": "https://..."}` | stored. Put this `url`, unchanged, in the file's `attachments[]` item |
+| `200 {"enabled": false, "url": "", "reason": "..."}` | refused (`unsupported-type`, `too-large`, `deactivated`, `unreadable`). List the file with an empty `url` |
+| any other status (`401`, `403`, `413`, `5xx`, ...) | not stored. List the file with an empty `url` |
+
+A file that could not be uploaded never stops the email: it is forwarded with the file named and an
+empty `url`, and `lastUid` advances after `/inbound` answers `202` as usual. The one exception is a
+`403` that says the gateway is revoked or no longer exists, which stops the gateway as in §4.
+
+Qlar accepts a `url` in `/inbound` only if it handed that `url` out for the same gateway and the same
+`messageId`, so the gateway must pass back exactly what it was given.

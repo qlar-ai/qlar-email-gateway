@@ -7,6 +7,27 @@ release version and is listed per release.
 
 ## [Unreleased]
 
+## [0.2.0] — unreleased
+
+Protocol 2. The change is additive: the gateway sends the same `/inbound` body as before, with
+`attachments[]` now filled in. **Update Qlar before running this release on a gateway**: a server
+that does not know `POST /attachments` would answer every upload with an error, and every email
+would then be forwarded with its attachments named but unreadable.
+
+### Added
+
+- Inbound attachments. Files attached to an email are uploaded to Qlar (`POST /attachments`, signed,
+  see `docs/PROTOCOL.md` section 9) and their URLs are sent in `attachments[]`, so the agent can read
+  PDFs, text and markdown files and look at JPEG, PNG and WebP pictures. At most five files per
+  email are uploaded, each up to 20 MB; the rest are listed by name only. Inline `cid:` pictures
+  (signature logos) are ignored.
+- A file that cannot be uploaded never holds back the email: it is forwarded with the file named and
+  no URL.
+
+### Changed
+
+- The gateway announces protocol `2` when it enrols and on every call.
+
 ## [0.1.9] — 2026-10-26
 
 Protocol 1. Hosted worker and on-prem gateway share the change. Qlar (Messenger-BE) must be released

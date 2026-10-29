@@ -105,8 +105,13 @@ def _keep_forwarded(text: str) -> str:
     return _BLANK_RUN.sub("\n\n", "\n".join(lines)).strip()
 
 
-def build_inbound_payload(msg: EmailMessage, uid: int, limit: int) -> dict[str, Any]:
-    """The `POST /inbound` body for one email, exactly the keys of PRD FR-24 / PROTOCOL.md §8."""
+def build_inbound_payload(
+    msg: EmailMessage, uid: int, limit: int, attachments: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """The `POST /inbound` body for one email, exactly the keys of PRD FR-24 / PROTOCOL.md §8.
+
+    `attachments` are the `{fileName, contentType, sizeBytes, url}` entries from `upload_all`.
+    """
     text, truncated = extract_text(msg, limit)
     from_name, from_address = parseaddr(str(msg.get("From") or ""))
 
@@ -123,8 +128,7 @@ def build_inbound_payload(msg: EmailMessage, uid: int, limit: int) -> dict[str, 
         "references": _single_line(msg.get("References")).split(),
         "text": text,
         "textTruncated": truncated,
-        # Filled from 0.2.0 (attachment upload); protocol 1 servers accept an empty list.
-        "attachments": [],
+        "attachments": list(attachments or []),
         "headers": {
             "autoSubmitted": _header_or_none(msg, "Auto-Submitted"),
             "precedence": _header_or_none(msg, "Precedence"),

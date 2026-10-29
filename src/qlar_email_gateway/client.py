@@ -106,12 +106,26 @@ class QlarClient:
         different handling, and only one of them should stop the gateway.
         """
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return self._send(path, body, "application/json", timeout)
+
+    def post_bytes(
+        self, path: str, body: bytes, content_type: str, *, timeout: float = 60.0
+    ) -> tuple[int, dict[str, Any]]:
+        """POSTs a signed raw body (an attachment). `path` may carry a query string.
+
+        The signature covers the path *with* its query exactly as sent, so the caller must
+        percent-encode the query before calling and nothing here re-encodes or reorders it.
+        Errors are raised as in `post`.
+        """
+        return self._send(path, body, content_type, timeout)
+
+    def _send(self, path: str, body: bytes, content_type: str, timeout: float) -> tuple[int, dict[str, Any]]:
         timestamp = str(int(time.time()))
         nonce = new_nonce()
 
         message = canonical_request("POST", path, timestamp, nonce, body)
         headers = {
-            "Content-Type": "application/json",
+            "Content-Type": content_type,
             PROTOCOL_HEADER: str(PROTOCOL_VERSION),
             TIMESTAMP_HEADER: timestamp,
             NONCE_HEADER: nonce,

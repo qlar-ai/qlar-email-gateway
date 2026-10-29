@@ -98,10 +98,12 @@ class FakeImap:
 
 
 class FakeQlar:
-    def __init__(self, script=None):
+    def __init__(self, script=None, upload_script=None):
         self.script = list(script or [])
         self.posts: list[dict] = []
         self.on_post = None
+        self.uploads: list[dict] = []
+        self.upload_script = list(upload_script or [])
 
     def post(self, path, payload, *, timeout=30.0):
         assert path == "/inbound"
@@ -109,6 +111,13 @@ class FakeQlar:
         if self.on_post:
             self.on_post(payload)
         outcome = self.script.pop(0) if self.script else (202, {"accepted": True})
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def post_bytes(self, path, body, content_type, *, timeout=60.0):
+        self.uploads.append({"path": path, "body": body, "content_type": content_type})
+        outcome = self.upload_script.pop(0) if self.upload_script else (200, {"url": f"https://cdn.test/{len(self.uploads)}"})
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -288,6 +297,91 @@ def test_revoked_stops(tmp_path):
         harness.run_until_poll_wait()
 
     assert harness.state.last_uid == 10
+
+
+def raw_email_with_attachments(uid: int, *files: tuple[str, str, bytes]) -> bytes:
+    msg = EmailMessage()
+    msg["From"] = f"Sender {uid} <sender{uid}@customer.test>"
+    msg["To"] = MAILBOX
+    msg["Subject"] = f"Question {uid}"
+    msg["Date"] = "Wed, 07 Oct 2026 09:00:00 +0000"
+    msg["Message-ID"] = f"<m{uid}@customer.test>"
+    msg.set_content(f"Body of {uid}")
+    for name, content_type, data in files:
+        main, sub = content_type.split("/")
+        msg.add_attachment(data, maintype=main, subtype=sub, filename=name)
+    return msg.as_bytes()
+
+
+def test_attachment_is_uploaded_and_its_url_forwarded_with_the_same_message_id(tmp_path):
+    raw = raw_email_with_attachments(11, ("offer.pdf", "application/pdf", b"%PDF"))
+    harness = Harness(tmp_path, FakeImap({11: raw}))
+
+    harness.run_until_poll_wait()
+
+    upload = harness.qlar.uploads[0]
+    payload = harness.qlar.posts[0]
+    assert upload["body"] == b"%PDF"
+    assert upload["content_type"] == "application/pdf"
+    assert "messageId=%3Cm11%40customer.test%3E" in upload["path"]
+    assert "from=sender11%40customer.test" in upload["path"]
+    assert payload["messageId"] == "<m11@customer.test>"
+    assert payload["attachments"] == [
+        {"fileName": "offer.pdf", "contentType": "application/pdf", "sizeBytes": 4, "url": "https://cdn.test/1"}
+    ]
+    assert harness.state.last_uid == 11
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        QlarRejected(413, "too large"),
+        QlarRejected(403, "pending", {"reason": "pending_approval"}),
+        QlarRejected(500, "boom"),
+        QlarUnreachable("down"),
+    ],
+)
+def test_upload_failure_still_forwards_and_advances(tmp_path, failure):
+    raw = raw_email_with_attachments(11, ("offer.pdf", "application/pdf", b"%PDF"))
+    harness = Harness(tmp_path, FakeImap({11: raw}), FakeQlar(upload_script=[failure]))
+
+    harness.run_until_poll_wait()
+
+    assert harness.qlar.posts[0]["attachments"] == [
+        {"fileName": "offer.pdf", "contentType": "application/pdf", "sizeBytes": 4, "url": ""}
+    ]
+    assert harness.state.last_uid == 11
+    assert [entry["status"] for entry in harness.audit()] == ["forwarded"]
+
+
+def test_revoked_during_upload_stops_without_advancing(tmp_path):
+    raw = raw_email_with_attachments(11, ("offer.pdf", "application/pdf", b"%PDF"))
+    qlar = FakeQlar(upload_script=[QlarRejected(403, "revoked", {"reason": "revoked"})])
+    harness = Harness(tmp_path, FakeImap({11: raw}), qlar)
+
+    with pytest.raises(Revoked):
+        harness.run_until_poll_wait()
+
+    assert qlar.posts == []
+    assert harness.state.last_uid == 10
+
+
+def test_email_without_attachments_uploads_nothing(tmp_path):
+    harness = Harness(tmp_path, FakeImap({11: raw_email(11)}))
+
+    harness.run_until_poll_wait()
+
+    assert harness.qlar.uploads == []
+    assert harness.qlar.posts[0]["attachments"] == []
+
+
+def test_audit_does_not_carry_attachment_names(tmp_path):
+    raw = raw_email_with_attachments(11, ("secret-plan.pdf", "application/pdf", b"%PDF"))
+    harness = Harness(tmp_path, FakeImap({11: raw}))
+
+    harness.run_until_poll_wait()
+
+    assert "secret-plan" not in harness.settings.audit_log_file.read_text(encoding="utf-8")
 
 
 def test_login_failure_sets_auth_failed(tmp_path):
