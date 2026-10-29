@@ -20,8 +20,9 @@ would then be forwarded with its attachments named but unreadable.
 - **For operators:** 0.2.0 uploads attachments of forwarded emails to Qlar. There is no setting to
   turn this off in 0.2.0.
 - **For operators:** a 0.2.0 gateway cannot be enrolled on a Qlar that does not yet speak protocol 2
-  (enrolment fails with a clear message); gateways that are already enrolled keep working but upload
-  attachments that an older Qlar ignores. Update Qlar first.
+  (Qlar refuses the enrolment, the enrolment code is not used up, and the gateway reports a rejected
+  code). Update Qlar first, then enrol. Gateways that are already enrolled keep working but upload
+  attachments that an older Qlar ignores.
 - Inbound attachments. Files attached to an email are uploaded to Qlar (`POST /attachments`, signed,
   see `docs/PROTOCOL.md` section 9) and their URLs are sent in `attachments[]`, so the agent can read
   PDFs, text, markdown, Word (`.docx`), Excel (`.xlsx`) and CSV files (read as text) and look at JPEG,

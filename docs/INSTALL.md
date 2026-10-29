@@ -96,7 +96,7 @@ On Windows, run the same `pip install` in a virtual environment and start
 
 | Symptom | Cause and fix |
 |---|---|
-| `enrolment code is not valid` | Codes are single use and expire after 15 minutes. Generate a new one |
+| `enrolment code is not valid` | Codes are single use and expire after 15 minutes. Generate a new one. If enrolment is rejected even with a fresh code, check that your Qlar has been updated to a version that supports protocol 2 |
 | Enrolment says the URL is not Qlar's API | `QLAR_BASE_URL` must be the API URL from the CMS panel, ending in `/api/email-gateway` |
 | `401 clock_skew` | This machine's clock is more than two minutes off. Fix NTP |
 | `waiting for approval` | Expected. Compare the fingerprint and click Approve in the CMS |

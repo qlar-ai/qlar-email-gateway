@@ -20,7 +20,7 @@ Two of them, deliberately independent:
 
 - **Release version** (`0.1.0`) — lives in `src/qlar_email_gateway/__init__.py` as
   `__version__`, and `pyproject.toml` reads it from there. That is the only place to edit.
-- **Protocol version** (`PROTOCOL_VERSION`, currently `1`) — the wire contract. A bug fix
+- **Protocol version** (`PROTOCOL_VERSION`, currently `2`) — the wire contract. A bug fix
   or a new command does **not** bump it. Only an incompatible change to the protocol does,
   and that needs a migration plan, because the fleet runs inside customer networks and
   upgrades on their schedule, not ours.

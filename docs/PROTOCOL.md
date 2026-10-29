@@ -1,4 +1,4 @@
-# Qlar Email Gateway protocol, version 1
+# Qlar Email Gateway protocol, version 2
 
 This is the complete wire contract between the on-premise email gateway and Qlar. It is
 published so that anyone can audit it, or write their own gateway in another language
@@ -63,7 +63,7 @@ Every request carries five headers:
 | `X-Qlar-Timestamp` | Unix seconds, as a decimal string |
 | `X-Qlar-Nonce` | a fresh random value, single use |
 | `X-Qlar-Signature` | base64( DER( ECDSA-SHA256( canonical string ))) |
-| `X-Qlar-Protocol` | `1` |
+| `X-Qlar-Protocol` | `2` (`1` before release 0.2.0) |
 
 The canonical string is five fields joined by `\n`:
 
@@ -183,7 +183,7 @@ still signed with the key being registered, which proves the caller holds the pr
   "hostname": "srv-mail-01",
   "platform": "Linux 5.15.0",
   "version": "0.2.0",
-  "protocol": 1,
+  "protocol": 2,
   "mailboxAddress": "ask@pelanggan.com",
   "idleSupported": true
 }
@@ -219,7 +219,7 @@ gateway at a time.
 ```json
 {
   "version": "0.2.0",
-  "protocol": 1,
+  "protocol": 2,
   "mailboxStatus": "ok",
   "lastUid": 4182,
   "maxWaitSeconds": 25
@@ -455,7 +455,7 @@ Qlar accepts a `url` in `/inbound` only if it handed that `url` out for the same
 ## 10. Attachments, outbound
 
 From release 0.2.0 (protocol `2`) a `send_email` job may carry pictures, for example a chart the agent
-drew. A job that carries none is exactly the job of protocol `1`.
+drew. A job that carries none is exactly the job of protocol `1` (its `protocol` field stays `1`).
 
 ### In the job
 
