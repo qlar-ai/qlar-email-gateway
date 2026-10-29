@@ -9,6 +9,7 @@ carries `Auto-Submitted: auto-replied` so that other well-behaved systems do not
 
 from __future__ import annotations
 
+import logging
 import re
 import smtplib
 import ssl
@@ -22,8 +23,34 @@ from typing import Any
 from .config import MailSettings
 from .job_attachments import Fetched
 
+logger = logging.getLogger("qlar_email_gateway.sender")
+
 SMTP_TIMEOUT_SECONDS = 30
-_CID_IMG = re.compile(r'<img\b[^>]*\bsrc="cid:[^"]*"[^>]*>', re.IGNORECASE)
+# An attribute value or any other character inside a tag; quoted values may contain `>`.
+_TAG_CHAR = r"""(?:[^>"']|"[^"]*"|'[^']*')"""
+#: An <img> whose src is a cid: URL: either quote style or none, spaces around `=`, any attribute order.
+_CID_IMG = re.compile(
+    rf"""<img\b{_TAG_CHAR}*?(?<![\w-])src\s*=\s*(?:"cid:[^"]*"|'cid:[^']*'|cid:[^\s>]*){_TAG_CHAR}*>""",
+    re.IGNORECASE,
+)
+#: Fallback: any tag that still mentions cid:, then any bare mention.
+_CID_TAG = re.compile(rf"""<{_TAG_CHAR}*?cid:{_TAG_CHAR}*>""", re.IGNORECASE)
+_CID_MENTION = re.compile(r"cid:[^\s\"'<>)]*", re.IGNORECASE)
+
+
+def strip_cid_images(html: str) -> str:
+    """The HTML without its `<img src="cid:...">` tags, and with no `cid:` reference left at all.
+
+    Used when the pictures those tags point at could not be attached: a mail client would show a
+    broken image for each one. The first pass is the exact tag; the later passes exist so that an
+    unusual spelling can never leave a dangling reference behind.
+    """
+    html = _CID_IMG.sub("", html)
+    if "cid:" in html.lower():
+        html = _CID_TAG.sub("", html)
+    if "cid:" in html.lower():
+        html = _CID_MENTION.sub("", html)
+    return html
 
 
 class SmtpSendError(Exception):
@@ -48,6 +75,25 @@ def build_reply(
     attachments but they could not be fetched (`attachments is None`), the reply goes without them
     and without the `<img src="cid:...">` tags that pointed at them.
     """
+    declared = bool(job.get("attachments"))
+    if attachments:
+        try:
+            return _build(mail, job, message_id, attachments, strip_cid=False)
+        except Exception as error:  # noqa: BLE001 - a picture must never cost the reply
+            logger.warning(
+                "the reply's attachments could not be built (%s); sending without them", type(error).__name__
+            )
+    return _build(mail, job, message_id, None, strip_cid=declared)
+
+
+def _build(
+    mail: MailSettings,
+    job: dict[str, Any],
+    message_id: str,
+    attachments: list[Fetched] | None,
+    *,
+    strip_cid: bool,
+) -> EmailMessage:
     msg = EmailMessage()
     msg["From"] = formataddr((mail.from_name, mail.address)) if mail.from_name else mail.address
     msg["To"] = ", ".join(str(address) for address in job.get("to") or [])
@@ -65,8 +111,8 @@ def build_reply(
 
     msg.set_content(str(job.get("textBody") or ""))
     html = str(job.get("htmlBody") or "")
-    if attachments is None and job.get("attachments"):
-        html = _CID_IMG.sub("", html)
+    if strip_cid:
+        html = strip_cid_images(html)
     if html:
         msg.add_alternative(html, subtype="html")
 

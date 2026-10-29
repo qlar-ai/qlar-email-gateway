@@ -73,6 +73,10 @@ class QlarRejected(Exception):
         self.body = body or {}
 
 
+class QlarResponseTooLarge(QlarRejected):
+    """A download was larger than the caller allowed; it was abandoned, not read to the end."""
+
+
 class QlarNotAnEndpoint(QlarRejected):
     """Something answered, but it was not Qlar's API.
 
@@ -106,8 +110,8 @@ class QlarClient:
         different handling, and only one of them should stop the gateway.
         """
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        response, decoded = self._exchange("POST", path, body, "application/json", timeout)
-        return response.status_code, decoded
+        status, decoded, _ = self._exchange("POST", path, body, "application/json", timeout)
+        return status, decoded
 
     def post_bytes(
         self, path: str, body: bytes, content_type: str, *, timeout: float = 60.0
@@ -118,21 +122,30 @@ class QlarClient:
         percent-encode the query before calling and nothing here re-encodes or reorders it.
         Errors are raised as in `post`.
         """
-        response, decoded = self._exchange("POST", path, body, content_type, timeout)
-        return response.status_code, decoded
+        status, decoded, _ = self._exchange("POST", path, body, content_type, timeout)
+        return status, decoded
 
-    def get_bytes(self, path: str, *, timeout: float = 30.0) -> bytes:
+    def get_bytes(self, path: str, *, max_bytes: int, timeout: float = 30.0) -> bytes:
         """GETs a signed, empty-bodied request and returns the raw response bytes.
 
         The signed path is relative to the API root, like every other call, and the body hash is
-        the hash of the empty body. A fresh nonce is used on every call. Errors are raised as in `post`.
+        the hash of the empty body. A fresh nonce is used on every call. Errors are raised as in
+        `post`. The body is streamed and never decoded: a declared `Content-Length` over
+        `max_bytes` is refused before reading, and the download is abandoned the moment the bytes
+        received exceed it (QlarResponseTooLarge).
         """
-        response, _ = self._exchange("GET", path, b"", None, timeout)
-        return response.content
+        _, _, content = self._exchange("GET", path, b"", None, timeout, max_bytes=max_bytes)
+        return content
 
     def _exchange(
-        self, method: str, path: str, body: bytes, content_type: str | None, timeout: float
-    ) -> tuple[httpx.Response, dict[str, Any]]:
+        self,
+        method: str,
+        path: str,
+        body: bytes,
+        content_type: str | None,
+        timeout: float,
+        max_bytes: int | None = None,
+    ) -> tuple[int, dict[str, Any], bytes]:
         timestamp = str(int(time.time()))
         nonce = new_nonce()
 
@@ -151,20 +164,30 @@ class QlarClient:
         url = f"{self.base_url.rstrip('/')}{path}"
 
         try:
-            with httpx.Client(verify=self.verify_tls, timeout=timeout, follow_redirects=False) as client:
-                response = client.request(method, url, content=body or None, headers=headers)
+            with (
+                httpx.Client(verify=self.verify_tls, timeout=timeout, follow_redirects=False) as client,
+                client.stream(method, url, content=body or None, headers=headers) as response,
+            ):
+                failed = response.status_code >= 400
+                binary = max_bytes is not None and not failed
+                if binary:
+                    declared = response.headers.get("content-length", "")
+                    if declared.isdigit() and int(declared) > (max_bytes or 0):
+                        raise QlarResponseTooLarge(response.status_code, "response larger than allowed")
+                limit = max_bytes if binary else ERROR_BODY_LIMIT if failed else JSON_BODY_LIMIT
+                content = _read_capped(response, limit or 0, strict=binary)
         except httpx.HTTPError as error:
             raise QlarUnreachable(str(error)) from error
 
         decoded: dict[str, Any] = {}
-        if response.content:
+        if content and not binary:
             try:
-                parsed = response.json()
+                parsed = json.loads(content)
                 decoded = parsed if isinstance(parsed, dict) else {"value": parsed}
             except ValueError:
-                decoded = {"raw": response.text[:500]}
+                decoded = {"raw": content[:500].decode("utf-8", errors="replace")}
 
-        if response.status_code >= 400:
+        if failed:
             if _is_not_our_api(response, decoded):
                 raise QlarNotAnEndpoint(response.status_code, url, response.headers.get("content-type", ""))
             raise QlarRejected(
@@ -173,7 +196,25 @@ class QlarClient:
                 decoded,
             )
 
-        return response, decoded
+        return response.status_code, decoded, content
+
+
+#: How much of an error answer is read; enough for Qlar's small JSON refusals, never a download.
+ERROR_BODY_LIMIT = 4096
+#: Qlar's JSON answers are small; this only stops a misbehaving server from filling memory.
+JSON_BODY_LIMIT = 4 * 1024 * 1024
+
+
+def _read_capped(response: httpx.Response, limit: int, *, strict: bool) -> bytes:
+    """Reads at most `limit` bytes. Over the limit: raise when `strict`, else truncate."""
+    received = bytearray()
+    for chunk in response.iter_bytes():
+        received.extend(chunk)
+        if len(received) > limit:
+            if strict:
+                raise QlarResponseTooLarge(response.status_code, "response larger than allowed")
+            return bytes(received[:limit])
+    return bytes(received)
 
 
 def _is_not_our_api(response: httpx.Response, decoded: dict[str, Any]) -> bool:

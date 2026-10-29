@@ -8,8 +8,6 @@ from email import message_from_bytes, policy
 
 import httpx
 import pytest
-from test_poll_jobs import Harness
-from test_sender import MAIL
 
 from qlar_email_gateway import client as client_module
 from qlar_email_gateway import crypto
@@ -18,6 +16,7 @@ from qlar_email_gateway.crypto import canonical_job_bytes, canonical_request, ve
 from qlar_email_gateway.job_attachments import Fetched, fetch_job_attachments
 from qlar_email_gateway.sender import build_reply
 
+JOB_ID = "job_0123456789abcdef0123456789abcdef"
 PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" * 20
 CID = "0123456789abcdef0123456789abcdef@qlar"
 HTML = (
@@ -39,7 +38,7 @@ def entry(data: bytes = PNG, **overrides) -> dict:
 
 
 BASE_JOB = {
-    "jobId": "job_9",
+    "jobId": "job_0123456789abcdef0123456789abcdef",
     "type": "send_email",
     "protocol": 1,
     "to": ["Budi@Customer.test"],
@@ -66,9 +65,11 @@ class FakeClient:
     def __init__(self, blobs: dict[int, object]) -> None:
         self.blobs = blobs
         self.paths: list[str] = []
+        self.max_bytes: list[int | None] = []
 
-    def get_bytes(self, path, *, timeout=30.0):
+    def get_bytes(self, path, *, max_bytes=None, timeout=30.0):
         self.paths.append(path)
+        self.max_bytes.append(max_bytes)
         outcome = self.blobs[int(path.rsplit("/", 1)[1])]
         if isinstance(outcome, Exception):
             raise outcome
@@ -85,7 +86,7 @@ def job_with(*entries: dict) -> dict:
 def test_canonical_bytes_without_attachments_unchanged():
     expected = "\n".join(
         [
-            "job_9",
+            "job_0123456789abcdef0123456789abcdef",
             "send_email",
             "1",
             "budi@customer.test",
@@ -177,10 +178,10 @@ def test_get_path_is_signed_relative_to_api_root(monkeypatch):
         client_module.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw)
     )
     qlar = QlarClient("https://q.test/api/email-gateway/", key, "egw_1")
-    path = "/jobs/job_9/attachments/0"
+    path = "/jobs/job_0123456789abcdef0123456789abcdef/attachments/0"
 
-    assert qlar.get_bytes(path) == PNG
-    qlar.get_bytes(path)
+    assert qlar.get_bytes(path, max_bytes=10_000) == PNG
+    qlar.get_bytes(path, max_bytes=10_000)
 
     request = seen[0]
     assert request.method == "GET"
@@ -204,7 +205,7 @@ def test_get_404_without_json_raises_not_an_endpoint(monkeypatch):
     )
 
     with pytest.raises(QlarNotAnEndpoint):
-        QlarClient("https://q.test/api", key, "egw_1").get_bytes("/jobs/j/attachments/0")
+        QlarClient("https://q.test/api", key, "egw_1").get_bytes("/jobs/j/attachments/0", max_bytes=10)
 
 
 # -- fetch_job_attachments ------------------------------------------------------------------------
@@ -221,7 +222,7 @@ def test_fetches_and_verifies_each_attachment():
         Fetched("chart.png", "image/png", CID, PNG),
         Fetched("b.jpg", "image/jpeg", None, second),
     ]
-    assert client.paths == ["/jobs/job_9/attachments/0", "/jobs/job_9/attachments/1"]
+    assert client.paths == [f"/jobs/{JOB_ID}/attachments/0", f"/jobs/{JOB_ID}/attachments/1"]
 
 
 def test_hash_mismatch_discards_attachment():
@@ -305,10 +306,10 @@ def parse(msg):
     return message_from_bytes(msg.as_bytes(), policy=policy.default)
 
 
-def test_inline_picture_becomes_related_part_with_content_id():
+def test_inline_picture_becomes_related_part_with_content_id(mail):
     job = {**BASE_JOB, "htmlBody": HTML, "protocol": 2, "attachments": [entry()]}
 
-    msg = build_reply(MAIL, job, "<qlar-1@corp.test>", [Fetched("chart.png", "image/png", CID, PNG)])
+    msg = build_reply(mail, job, "<qlar-1@corp.test>", [Fetched("chart.png", "image/png", CID, PNG)])
 
     mime = parse(msg)
     assert mime.get_content_type() == "multipart/alternative"
@@ -322,10 +323,10 @@ def test_inline_picture_becomes_related_part_with_content_id():
     assert image.get_payload(decode=True) == PNG
 
 
-def test_non_inline_becomes_attachment_with_file_name():
+def test_non_inline_becomes_attachment_with_file_name(mail):
     job = {**BASE_JOB, "protocol": 2, "attachments": [entry(contentId=None)]}
 
-    msg = build_reply(MAIL, job, "<qlar-1@corp.test>", [Fetched("chart.png", "image/png", None, PNG)])
+    msg = build_reply(mail, job, "<qlar-1@corp.test>", [Fetched("chart.png", "image/png", None, PNG)])
 
     mime = parse(msg)
     assert mime.get_content_type() == "multipart/mixed"
@@ -336,18 +337,18 @@ def test_non_inline_becomes_attachment_with_file_name():
     assert attachment.get_payload(decode=True) == PNG
 
 
-def test_text_alternative_still_present():
+def test_text_alternative_still_present(mail):
     job = {**BASE_JOB, "htmlBody": HTML, "protocol": 2, "attachments": [entry()]}
 
-    msg = build_reply(MAIL, job, "<qlar-1@corp.test>", [Fetched("chart.png", "image/png", CID, PNG)])
+    msg = build_reply(mail, job, "<qlar-1@corp.test>", [Fetched("chart.png", "image/png", CID, PNG)])
 
     assert parse(msg).get_body(("plain",)).get_content().strip() == "Halo"
 
 
-def test_attachment_fetch_failure_sends_without_cid_images():
+def test_attachment_fetch_failure_sends_without_cid_images(mail):
     job = {**BASE_JOB, "htmlBody": HTML, "protocol": 2, "attachments": [entry()]}
 
-    msg = build_reply(MAIL, job, "<qlar-1@corp.test>", None)
+    msg = build_reply(mail, job, "<qlar-1@corp.test>", None)
 
     mime = parse(msg)
     assert "cid:" not in msg.as_string()
@@ -357,10 +358,10 @@ def test_attachment_fetch_failure_sends_without_cid_images():
     assert list(mime.iter_attachments()) == []
 
 
-def test_job_without_attachments_is_unchanged():
+def test_job_without_attachments_is_unchanged(mail):
     job = {**BASE_JOB, "htmlBody": HTML}
 
-    msg = build_reply(MAIL, job, "<qlar-1@corp.test>")
+    msg = build_reply(mail, job, "<qlar-1@corp.test>")
 
     mime = parse(msg)
     assert mime.get_content_type() == "multipart/alternative"
@@ -369,11 +370,6 @@ def test_job_without_attachments_is_unchanged():
 
 
 # -- poll -----------------------------------------------------------------------------------------
-
-
-@pytest.fixture
-def harness(tmp_path):
-    return Harness(tmp_path, crypto.generate_private_key())
 
 
 def _capture_sender(harness):
@@ -391,7 +387,7 @@ def test_poll_fetches_attachments_after_guard_and_passes_them_to_the_sender(harn
     calls = _capture_sender(harness)
     client = FakeClient({0: PNG})
     harness.loop.client.get_bytes = client.get_bytes
-    job = harness.job(protocol=2, attachments=[entry()])
+    job = harness.job(protocol=2, jobId=JOB_ID, attachments=[entry()])
 
     harness.loop._run_job(job)
 
@@ -403,7 +399,7 @@ def test_poll_fetches_attachments_after_guard_and_passes_them_to_the_sender(harn
 def test_poll_fetch_failure_still_sends_and_audits_the_skip(harness):
     calls = _capture_sender(harness)
     harness.loop.client.get_bytes = FakeClient({0: QlarRejected(404, "x", {"message": "x"})}).get_bytes
-    job = harness.job(protocol=2, attachments=[entry()])
+    job = harness.job(protocol=2, jobId=JOB_ID, attachments=[entry()])
 
     harness.loop._run_job(job)
 
@@ -418,7 +414,7 @@ def test_poll_guard_refusal_fetches_nothing(harness):
     _capture_sender(harness)
     client = FakeClient({0: PNG})
     harness.loop.client.get_bytes = client.get_bytes
-    job = harness.job(protocol=2, attachments=[entry()], to=["a@x.test", "b@x.test"])
+    job = harness.job(protocol=2, jobId=JOB_ID, attachments=[entry()], to=["a@x.test", "b@x.test"])
 
     harness.loop._run_job(job)
 
@@ -428,7 +424,7 @@ def test_poll_guard_refusal_fetches_nothing(harness):
 def test_poll_job_without_attachments_makes_no_extra_request(harness):
     calls = _capture_sender(harness)
 
-    def boom(path, *, timeout=30.0):
+    def boom(path, *, max_bytes=None, timeout=30.0):
         raise AssertionError("no fetch expected")
 
     harness.loop.client.get_bytes = boom
@@ -444,7 +440,7 @@ def test_poll_revoked_during_fetch_stops_the_loop(harness):
     ).get_bytes
 
     with pytest.raises(Revoked):
-        harness.loop._run_send_email(harness.job(protocol=2, attachments=[entry()]), 0.0)
+        harness.loop._run_send_email(harness.job(protocol=2, jobId=JOB_ID, attachments=[entry()]), 0.0)
 
 
 def test_poll_announces_protocol_2(harness):

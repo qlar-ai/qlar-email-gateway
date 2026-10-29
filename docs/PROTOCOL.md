@@ -484,7 +484,11 @@ GET /jobs/{jobId}/attachments/{index}
 (§2): the signed path is the path above, relative to the API root, and the body hash is the hash of an
 empty body. Every request needs a fresh nonce. `200` carries the raw bytes. The gateway accepts them only
 if their length equals `sizeBytes` and their SHA-256 equals `sha256`; each picture may be at most 8 MB and
-all of them together at most 15 MB. `404` means the picture is no longer available.
+all of them together at most 15 MB. `404` means the picture is no longer available. The gateway stops downloading as soon as more than
+`sizeBytes` bytes arrive (or `Content-Length` says so), and refuses a job whose fields are not of the expected
+form: `jobId` is `job_` and 32 lower-case hex characters, `fileName` is 1 to 100 letters, digits, `.`, `_`, `-`
+or spaces, `contentType` is `type/subtype` in lower case, and `contentId` is 32 lower-case hex characters
+followed by `@qlar`. One invalid item means the reply is sent without any of the pictures.
 
 ### When a picture is missing
 
