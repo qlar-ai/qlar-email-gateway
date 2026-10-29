@@ -409,7 +409,9 @@ and `attachments[]` is still the list of `{fileName, contentType, sizeBytes, url
   are listed with an empty `url`.
 - A file larger than 20 MB, or of a type Qlar does not read, is listed with an empty `url` and its
   bytes are not sent. Supported: JPEG, PNG and WebP images, and `.pdf`, `.txt` and `.md` files.
-- File names are sent without any folder part; non-ASCII names are decoded first.
+- File names are sent without any folder part, at most 255 characters (the extension is kept); non-ASCII
+  names are decoded first. Attached emails (`message/rfc822`) are not uploaded and their contents are not
+  listed.
 
 ### Upload
 
@@ -432,6 +434,9 @@ for byte. The request is signed like every other call (§2); the signed path is 
 | `200 {"url": "https://..."}` | stored. Put this `url`, unchanged, in the file's `attachments[]` item |
 | `200 {"enabled": false, "url": "", "reason": "..."}` | refused (`unsupported-type`, `too-large`, `deactivated`, `unreadable`). List the file with an empty `url` |
 | any other status (`401`, `403`, `413`, `5xx`, ...) | not stored. List the file with an empty `url` |
+
+A failed upload is not retried; the file is named in the message. When Qlar cannot be reached, or the
+gateway is still waiting for approval, the remaining files of that email are not tried either.
 
 A file that could not be uploaded never stops the email: it is forwarded with the file named and an
 empty `url`, and `lastUid` advances after `/inbound` answers `202` as usual. The one exception is a

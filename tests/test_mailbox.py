@@ -384,6 +384,36 @@ def test_audit_does_not_carry_attachment_names(tmp_path):
     assert "secret-plan" not in harness.settings.audit_log_file.read_text(encoding="utf-8")
 
 
+def test_undecodable_attachment_does_not_make_the_email_unparseable(tmp_path, monkeypatch):
+    import qlar_email_gateway.attachments as att
+
+    raw = raw_email_with_attachments(11, ("offer.pdf", "application/pdf", b"%PDF"))
+
+    def broken(part):
+        raise ValueError("broken")
+
+    monkeypatch.setattr(att, "_decode", broken)
+    harness = Harness(tmp_path, FakeImap({11: raw}))
+
+    harness.run_until_poll_wait()
+
+    assert harness.qlar.posts[0]["attachments"][0]["url"] == ""
+    assert [entry["status"] for entry in harness.audit()] == ["forwarded"]
+
+
+def test_not_an_endpoint_answer_forwards_email_without_url(tmp_path):
+    from qlar_email_gateway.client import QlarNotAnEndpoint
+
+    raw = raw_email_with_attachments(11, ("offer.pdf", "application/pdf", b"%PDF"))
+    qlar = FakeQlar(upload_script=[QlarNotAnEndpoint(404, "https://x", "text/html")])
+    harness = Harness(tmp_path, FakeImap({11: raw}), qlar)
+
+    harness.run_until_poll_wait()
+
+    assert harness.qlar.posts[0]["attachments"][0]["url"] == ""
+    assert harness.state.last_uid == 11
+
+
 def test_login_failure_sets_auth_failed(tmp_path):
     imap = FakeImap({}, login_error=LoginError("AUTHENTICATIONFAILED"))
     harness = Harness(tmp_path, imap)
