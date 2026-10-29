@@ -61,8 +61,12 @@ the artifacts attached.
    docker run --rm ghcr.io/qlar-ai/email-gateway:0.1.0 version
    sha256sum -c qlar_email_gateway-0.1.0.sha256
    ```
-8. **Point the CMS download page at the new release** and check that the version it
-   advertises matches.
+8. **Raise the version in the Qlar console's install panel to the new release.** Every
+   release needs this, not only the big ones: the panel builds the Docker and pip commands
+   that self-hosted customers copy from the version it names, so a release that is not
+   reflected there is never installed by new customers. Do it only after the release is
+   published (the commands must name a release that exists), then check that the version
+   the panel prints matches the tag. Qlar-run hosted workers do not read this version.
 
 ## After a release
 
