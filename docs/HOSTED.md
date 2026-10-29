@@ -7,8 +7,8 @@ for customer premises; there, use the [on-prem gateway](INSTALL.md). Image:
 
 ## Configuration
 
-Five environment variables and nothing else. Which are needed depends on where Messenger-BE keeps the
-mailbox credentials (`Messenger-BE/docs/email-hosted-runbook.md`): **Option A** Key Vault, **Option B**
+Five environment variables and nothing else. Which are needed depends on where Qlar keeps the
+mailbox credentials: **Option A** Key Vault, **Option B**
 Cosmos-encrypted (no Key Vault).
 
 | Variable | Required | Meaning | Default |
