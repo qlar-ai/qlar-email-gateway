@@ -15,7 +15,7 @@ outbound connections.
 |---|---|
 | This machine | Mailbox credentials, the gateway's private key, the audit log |
 | Your mail server | Everything it already holds |
-| Qlar | The text of emails forwarded to it, and the decision of what to answer |
+| Qlar | The text and readable attachments of emails forwarded to it, and the decision of what to answer |
 | Anything in between (proxies, TLS terminators) | Nothing — both directions are signed |
 
 ## Controls
@@ -35,7 +35,8 @@ server over IMAP/SMTP. Qlar cannot open a connection to it.
 - Every request carries a signature over method, path, timestamp, nonce and a hash of the body.
   Qlar refuses requests more than 120 seconds old and nonces it has seen.
 - Every job carries Qlar's signature over all fields that change what the gateway does
-  (recipients, subject, threading headers, body hashes, expiry). The gateway verifies it with the
+  (recipients, subject, threading headers, body hashes, the description and SHA-256 of each
+  attached picture, expiry). The gateway verifies it with the
   Qlar public key pinned at enrolment and silently discards anything that fails.
 
 ### What may be sent
@@ -45,14 +46,33 @@ The send guard runs on this machine and nothing in a job can change it:
 - `From` is always the configured mailbox.
 - One recipient per reply, given as one bare address (no display name, list or header tricks).
 - At most `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies per recipient per hour.
-- No attachments are ever sent.
+- Attachments are only the pictures Qlar's signed job declares, each fetched from Qlar over the
+  signed channel and checked against its SHA-256 (see "Attachments" below). Nothing else is ever
+  attached.
 - Expired jobs are refused.
 
 Since 0.1.3 the gateway no longer limits replies to people who recently wrote in (the old
 `RECIPIENT_ALLOWLIST` / `RECIPIENT_MEMORY_DAYS` settings are ignored): who the agent answers is set
 in the Qlar CMS. A compromised Qlar could therefore send short text emails from your address to any
 address, one recipient at a time and at most `MAX_SENDS_PER_HOUR_PER_RECIPIENT` per recipient per
-hour — never attachments, never from another address.
+hour, optionally with pictures that pass the checks below — never other attachments, never from
+another address.
+
+### Attachments
+
+**Inbound.** From 0.2.0 the gateway uploads the readable attachments of each email it forwards
+(pictures, PDF, text, Word, Excel and CSV files) to Qlar over the same signed, outbound-only HTTPS
+channel, before it forwards the email's text. Only the first five files of an email are uploaded,
+at most 20 MB each. Files are sent only for emails the gateway has already decided to forward, after
+its filters. Files of a kind it does not support, or that cannot be uploaded, are listed by name
+only. Inline `cid:` pictures such as signature logos are never uploaded. In 0.2.0 there is no
+setting to turn this off.
+
+**Outbound.** A reply can carry pictures that Qlar's signed job declares. The gateway fetches each
+one from Qlar over the signed channel only, never from any other address, and checks its length and
+SHA-256 against the signed job. It accepts at most five pictures, 8 MB each and 15 MB in total. If
+anything fails to verify, the reply is sent without the pictures. The gateway never attaches anything
+from the local disk or from any other source.
 
 ### Your mailbox
 
@@ -67,8 +87,8 @@ never appears in it, in the process log or in any request to Qlar.
 
 ## What this does **not** protect against
 
-- **Email content leaves your network.** The text of each forwarded email (and, from 0.2.0,
-  readable attachments) is sent to Qlar and processed by the language model behind the agent. The
+- **Email content leaves your network.** The text of each forwarded email (and, from 0.2.0, its
+  readable attachments, which are uploaded to Qlar) is sent to Qlar and processed by the language model behind the agent. The
   gateway closes the credential and network-exposure gap, not data egress. Use a mailbox whose
   contents you are willing to share with the agent.
 - **A compromised gateway host.** Anyone who controls this machine has the mailbox password and

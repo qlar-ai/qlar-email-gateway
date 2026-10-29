@@ -397,7 +397,8 @@ joins an earlier thread from the same sender whose normalized subject (without `
 ## 9. Attachments
 
 From release 0.2.0 (protocol `2`) the gateway hands the files attached to an email to Qlar so the
-agent can read them. Nothing else about `POST /inbound` changes: it is still one request per email,
+agent can read them. This means 0.2.0 uploads the attachments of forwarded emails to Qlar; there is
+no setting to turn this off in 0.2.0. Nothing else about `POST /inbound` changes: it is still one request per email,
 and `attachments[]` is still the list of `{fileName, contentType, sizeBytes, url}` items.
 
 ### Which files

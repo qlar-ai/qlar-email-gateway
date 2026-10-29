@@ -18,9 +18,10 @@ no port, needs no firewall rule, no certificate and no DNS entry.
 - **Both directions are signed.** The gateway signs every request with its own key; Qlar signs
   every reply job, and the gateway discards a job whose signature does not verify.
 - **Every send is checked here.** One recipient per reply, at most
-  `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies to them an hour, no attachments except the pictures the signed job declares (checked
-  against their SHA-256), and always from your own address. Nothing Qlar sends can loosen this. Who the agent answers is set in the Qlar CMS
-  (the channel's public / private mode and its contact lists).
+  `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies to them an hour, no attachments except the files the signed job declares (checked
+  against their SHA-256), and always from your own address. Nothing Qlar sends can loosen this.
+  Who the agent answers is set in the Qlar CMS (the channel's public / private mode and its contact
+  lists).
 - **Your mailbox is left alone.** The gateway never marks mail as read, never moves or deletes it.
 - **You keep a record.** Every email forwarded, filtered and sent is written to a local JSONL
   audit file (`AUDIT_LOG_FILE`).
@@ -34,8 +35,9 @@ Never forwarded: auto-replies (`Auto-Submitted`, `X-Auto-Response-Suppress`), bu
 `mailer-daemon`/`postmaster`/`noreply`, mail with no `Message-ID`, and mail dated before enrolment.
 Existing mail in the inbox is never answered.
 
-**Privacy.** The text of each forwarded email (and, from 0.2.0, readable attachments) goes to Qlar
-and to the language model behind the agent. The gateway removes the need to hand over mailbox
+**Privacy.** The text of each forwarded email goes to Qlar and to the language model behind the
+agent. From 0.2.0 its readable attachments (the first five, at most 20 MB each) are uploaded too,
+and there is no setting to turn that off. The gateway removes the need to hand over mailbox
 credentials or open your network; it does not keep email content inside your network. See
 [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
 
