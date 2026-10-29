@@ -345,3 +345,86 @@ def test_post_bytes_raises_rejected_on_413(monkeypatch):
         qlar.post_bytes("/attachments?a=b", b"x", "application/pdf")
 
     assert raised.value.status == 413
+
+
+# -- office formats -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type"),
+    [
+        ("report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        ("data.csv", "text/csv"),
+        ("report.docx", "application/octet-stream"),
+    ],
+)
+def test_docx_xlsx_csv_are_uploaded(name, content_type):
+    uploader = FakeUploader()
+
+    entries = upload_all(uploader, "<m>", "a@b.test", [item(name, content_type)])
+
+    assert len(uploader.calls) == 1
+    assert uploader.calls[0]["content_type"] == content_type
+    assert entries[0]["url"] != ""
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type"),
+    [
+        ("old.doc", "application/msword"),
+        ("old.xls", "application/vnd.ms-excel"),
+        ("macro.docm", "application/vnd.ms-word.document.macroEnabled.12"),
+        ("macro.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"),
+        ("deck.ppt", "application/vnd.ms-powerpoint"),
+        ("deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    ],
+)
+def test_legacy_doc_xls_and_macro_types_are_listed_without_upload(name, content_type):
+    uploader = FakeUploader()
+
+    entries = upload_all(uploader, "<m>", "a@b.test", [item(name, content_type)])
+
+    assert uploader.calls == []
+    assert entries[0]["fileName"] == name
+    assert entries[0]["url"] == ""
+
+
+def test_csv_declared_as_vnd_ms_excel_is_uploaded():
+    uploader = FakeUploader()
+
+    entries = upload_all(uploader, "<m>", "a@b.test", [item("export.csv", "application/vnd.ms-excel")])
+
+    assert uploader.calls[0]["content_type"] == "application/vnd.ms-excel"
+    assert entries[0]["url"] != ""
+
+
+def test_office_file_beyond_the_fifth_is_not_uploaded():
+    uploader = FakeUploader()
+    items = [item(f"f{i}.pdf") for i in range(5)] + [item("late.docx", "application/octet-stream")]
+
+    entries = upload_all(uploader, "<m>", "a@b.test", items)
+
+    assert len(uploader.calls) == 5
+    assert entries[5]["url"] == ""
+
+
+def test_uppercase_extension_is_uploaded():
+    uploader = FakeUploader()
+
+    upload_all(
+        uploader,
+        "<m>",
+        "a@b.test",
+        [item("REPORT.DOCX", "application/octet-stream"), item("Data.CSV", "text/csv")],
+    )
+
+    assert len(uploader.calls) == 2
+
+
+def test_collect_decodes_office_files_for_upload():
+    msg = email_with(("application/vnd.ms-excel", "attachment", b"a,b\n1,2\n", {"filename": "export.csv"}))
+
+    (found,) = collect_attachments(msg)
+
+    assert found.data == b"a,b\n1,2\n"

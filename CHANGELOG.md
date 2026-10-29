@@ -18,7 +18,9 @@ would then be forwarded with its attachments named but unreadable.
 
 - Inbound attachments. Files attached to an email are uploaded to Qlar (`POST /attachments`, signed,
   see `docs/PROTOCOL.md` section 9) and their URLs are sent in `attachments[]`, so the agent can read
-  PDFs, text and markdown files and look at JPEG, PNG and WebP pictures. At most five files per
+  PDFs, text, markdown, Word (`.docx`), Excel (`.xlsx`) and CSV files (read as text) and look at JPEG,
+  PNG and WebP pictures. Older `.doc` and `.xls` files, macro-enabled files and PowerPoint files are
+  listed by name only. At most five files per
   email are uploaded, each up to 20 MB; the rest are listed by name only. Inline `cid:` pictures
   (signature logos) are ignored.
 - Replies can carry pictures. A protocol 2 reply job lists its pictures (name, type, size, SHA-256) under

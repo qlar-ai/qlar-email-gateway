@@ -408,7 +408,10 @@ and `attachments[]` is still the list of `{fileName, contentType, sizeBytes, url
 - Only the **first five** files of an email, in the order they appear, are uploaded. Further files
   are listed with an empty `url`.
 - A file larger than 20 MB, or of a type Qlar does not read, is listed with an empty `url` and its
-  bytes are not sent. Supported: JPEG, PNG and WebP images, and `.pdf`, `.txt` and `.md` files.
+  bytes are not sent. Qlar reads JPEG, PNG and WebP images, and `.pdf`, `.txt`, `.md`, `.docx`, `.xlsx` and
+  `.csv` files (Word, Excel and CSV files are read as text). Older `.doc` and `.xls` files, macro-enabled `.docm` and
+  `.xlsm` files and PowerPoint files are not read: they are listed by name only. The type is judged by the
+  file extension, so a CSV that a mail program labels `application/vnd.ms-excel` is still sent.
 - File names are sent without any folder part, at most 255 characters (the extension is kept); non-ASCII
   names are decoded first. Attached emails (`message/rfc822`) are not uploaded and their contents are not
   listed.

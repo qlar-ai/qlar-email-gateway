@@ -18,8 +18,8 @@ no port, needs no firewall rule, no certificate and no DNS entry.
 - **Both directions are signed.** The gateway signs every request with its own key; Qlar signs
   every reply job, and the gateway discards a job whose signature does not verify.
 - **Every send is checked here.** One recipient per reply, at most
-  `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies to them an hour, no attachments, and always from your
-  own address. Nothing Qlar sends can loosen this. Who the agent answers is set in the Qlar CMS
+  `MAX_SENDS_PER_HOUR_PER_RECIPIENT` replies to them an hour, no attachments except the pictures the signed job declares (checked
+  against their SHA-256), and always from your own address. Nothing Qlar sends can loosen this. Who the agent answers is set in the Qlar CMS
   (the channel's public / private mode and its contact lists).
 - **Your mailbox is left alone.** The gateway never marks mail as read, never moves or deletes it.
 - **You keep a record.** Every email forwarded, filtered and sent is written to a local JSONL

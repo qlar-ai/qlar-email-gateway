@@ -39,7 +39,18 @@ MAX_NAME_CHARS = 255
 UPLOAD_TIMEOUT_SECONDS = 120.0
 
 _IMAGE_TYPES = frozenset({"image/jpeg", "image/jpg", "image/png", "image/webp"})
-_SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md", ".jpg", ".jpeg", ".png", ".webp")
+_SUPPORTED_EXTENSIONS = (
+    ".pdf",
+    ".txt",
+    ".md",
+    ".docx",
+    ".xlsx",
+    ".csv",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+)
 
 
 @dataclass
