@@ -257,6 +257,20 @@ def canonical_job_bytes(job: dict[str, Any]) -> bytes:
         _text(job.get("conversationId")),
     ]
 
+    attachments = job.get("attachments")
+    if isinstance(attachments, list) and attachments:
+        # Protocol 2. One line per attachment, in order: fileName, contentType, contentId (empty
+        # when missing or null), sha256, sizeBytes, joined by tabs; the lines are hashed like the
+        # bodies. A job without attachments adds nothing, so protocol 1 jobs verify as before.
+        lines = [
+            "\t".join(
+                _text(item.get(key)) if isinstance(item, dict) else ""
+                for key in ("fileName", "contentType", "contentId", "sha256", "sizeBytes")
+            )
+            for item in attachments
+        ]
+        parts.append(body_hash("\n".join(lines).encode("utf-8")))
+
     return "\n".join(parts).encode("utf-8")
 
 

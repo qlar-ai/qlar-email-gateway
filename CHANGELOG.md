@@ -21,6 +21,10 @@ would then be forwarded with its attachments named but unreadable.
   PDFs, text and markdown files and look at JPEG, PNG and WebP pictures. At most five files per
   email are uploaded, each up to 20 MB; the rest are listed by name only. Inline `cid:` pictures
   (signature logos) are ignored.
+- Replies can carry pictures. A protocol 2 reply job lists its pictures (name, type, size, SHA-256) under
+  the job's signature; the gateway fetches each one with a signed `GET /jobs/{jobId}/attachments/{index}`,
+  checks length and SHA-256, and sends them inline with the HTML (`cid:`). A picture that cannot be fetched
+  or verified is left out and the reply is still sent. `docs/PROTOCOL.md` section 10.
 - A file that cannot be uploaded never holds back the email: it is forwarded with the file named and
   no URL.
 

@@ -2,12 +2,14 @@
 
 What the job may decide: the recipient (already checked by the send guard), the subject, the
 threading headers and the two bodies. What it may not: `From` is always the configured mailbox,
-there are never attachments, and every reply carries `Auto-Submitted: auto-replied` so that other
-well-behaved systems do not answer it back.
+attachments are only the pictures the signed job declares, each verified by its SHA-256 before it is
+attached (a picture that cannot be verified is left out, never sent unchecked), and every reply
+carries `Auto-Submitted: auto-replied` so that other well-behaved systems do not answer it back.
 """
 
 from __future__ import annotations
 
+import re
 import smtplib
 import ssl
 import uuid
@@ -18,8 +20,10 @@ from email.utils import formataddr, formatdate
 from typing import Any
 
 from .config import MailSettings
+from .job_attachments import Fetched
 
 SMTP_TIMEOUT_SECONDS = 30
+_CID_IMG = re.compile(r'<img\b[^>]*\bsrc="cid:[^"]*"[^>]*>', re.IGNORECASE)
 
 
 class SmtpSendError(Exception):
@@ -31,7 +35,19 @@ class SmtpSendError(Exception):
         self.code = code
 
 
-def build_reply(mail: MailSettings, job: dict[str, Any], message_id: str) -> EmailMessage:
+def build_reply(
+    mail: MailSettings,
+    job: dict[str, Any],
+    message_id: str,
+    attachments: list[Fetched] | None = None,
+) -> EmailMessage:
+    """The reply as a MIME message.
+
+    `attachments` are the verified files of a job that declared some. Pictures with a content id go
+    inline, related to the HTML part; the others are ordinary attachments. When the job declared
+    attachments but they could not be fetched (`attachments is None`), the reply goes without them
+    and without the `<img src="cid:...">` tags that pointed at them.
+    """
     msg = EmailMessage()
     msg["From"] = formataddr((mail.from_name, mail.address)) if mail.from_name else mail.address
     msg["To"] = ", ".join(str(address) for address in job.get("to") or [])
@@ -49,16 +65,42 @@ def build_reply(mail: MailSettings, job: dict[str, Any], message_id: str) -> Ema
 
     msg.set_content(str(job.get("textBody") or ""))
     html = str(job.get("htmlBody") or "")
+    if attachments is None and job.get("attachments"):
+        html = _CID_IMG.sub("", html)
     if html:
         msg.add_alternative(html, subtype="html")
+
+    inline = [item for item in attachments or [] if item.content_id]
+    plain = [item for item in attachments or [] if not item.content_id]
+    if inline and html:
+        html_part = msg.get_body(("html",))
+        for item in inline:
+            maintype, _, subtype = item.content_type.partition("/")
+            html_part.add_related(  # type: ignore[union-attr]
+                item.data,
+                maintype=maintype,
+                subtype=subtype,
+                cid=f"<{item.content_id}>",
+                disposition="inline",
+                filename=item.file_name,
+            )
+    else:
+        plain = [*inline, *plain]
+    for item in plain:
+        maintype, _, subtype = item.content_type.partition("/")
+        msg.add_attachment(
+            item.data, maintype=maintype, subtype=subtype, filename=item.file_name, disposition="attachment"
+        )
     return msg
 
 
-def send_reply(mail: MailSettings, job: dict[str, Any]) -> str:
+def send_reply(
+    mail: MailSettings, job: dict[str, Any], attachments: list[Fetched] | None = None
+) -> str:
     """Sends the reply and returns the Message-ID it was sent with."""
     domain = mail.address.rpartition("@")[2] or "localhost"
     message_id = f"<qlar-{uuid.uuid4().hex}@{domain}>"
-    msg = build_reply(mail, job, message_id)
+    msg = build_reply(mail, job, message_id, attachments)
     recipients = [str(address) for address in job.get("to") or []]
 
     with _smtp_errors():

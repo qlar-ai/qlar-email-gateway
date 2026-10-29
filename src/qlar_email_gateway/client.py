@@ -106,7 +106,8 @@ class QlarClient:
         different handling, and only one of them should stop the gateway.
         """
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        return self._send(path, body, "application/json", timeout)
+        response, decoded = self._exchange("POST", path, body, "application/json", timeout)
+        return response.status_code, decoded
 
     def post_bytes(
         self, path: str, body: bytes, content_type: str, *, timeout: float = 60.0
@@ -117,20 +118,33 @@ class QlarClient:
         percent-encode the query before calling and nothing here re-encodes or reorders it.
         Errors are raised as in `post`.
         """
-        return self._send(path, body, content_type, timeout)
+        response, decoded = self._exchange("POST", path, body, content_type, timeout)
+        return response.status_code, decoded
 
-    def _send(self, path: str, body: bytes, content_type: str, timeout: float) -> tuple[int, dict[str, Any]]:
+    def get_bytes(self, path: str, *, timeout: float = 30.0) -> bytes:
+        """GETs a signed, empty-bodied request and returns the raw response bytes.
+
+        The signed path is relative to the API root, like every other call, and the body hash is
+        the hash of the empty body. A fresh nonce is used on every call. Errors are raised as in `post`.
+        """
+        response, _ = self._exchange("GET", path, b"", None, timeout)
+        return response.content
+
+    def _exchange(
+        self, method: str, path: str, body: bytes, content_type: str | None, timeout: float
+    ) -> tuple[httpx.Response, dict[str, Any]]:
         timestamp = str(int(time.time()))
         nonce = new_nonce()
 
-        message = canonical_request("POST", path, timestamp, nonce, body)
+        message = canonical_request(method, path, timestamp, nonce, body)
         headers = {
-            "Content-Type": content_type,
             PROTOCOL_HEADER: str(PROTOCOL_VERSION),
             TIMESTAMP_HEADER: timestamp,
             NONCE_HEADER: nonce,
             SIGNATURE_HEADER: sign(self.private_key, message),
         }
+        if content_type:
+            headers["Content-Type"] = content_type
         if self.gateway_id:
             headers[GATEWAY_ID_HEADER] = self.gateway_id
 
@@ -138,7 +152,7 @@ class QlarClient:
 
         try:
             with httpx.Client(verify=self.verify_tls, timeout=timeout, follow_redirects=False) as client:
-                response = client.post(url, content=body, headers=headers)
+                response = client.request(method, url, content=body or None, headers=headers)
         except httpx.HTTPError as error:
             raise QlarUnreachable(str(error)) from error
 
@@ -159,7 +173,7 @@ class QlarClient:
                 decoded,
             )
 
-        return response.status_code, decoded
+        return response, decoded
 
 
 def _is_not_our_api(response: httpx.Response, decoded: dict[str, Any]) -> bool:

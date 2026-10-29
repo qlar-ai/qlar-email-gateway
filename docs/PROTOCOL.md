@@ -444,3 +444,52 @@ empty `url`, and `lastUid` advances after `/inbound` answers `202` as usual. The
 
 Qlar accepts a `url` in `/inbound` only if it handed that `url` out for the same gateway and the same
 `messageId`, so the gateway must pass back exactly what it was given.
+
+---
+
+## 10. Attachments, outbound
+
+From release 0.2.0 (protocol `2`) a `send_email` job may carry pictures, for example a chart the agent
+drew. A job that carries none is exactly the job of protocol `1`.
+
+### In the job
+
+A job with pictures has `"protocol": 2` and an `attachments` array (between `conversationId` and
+`signature`), at most five items:
+
+```json
+{ "fileName": "sales-chart.png", "contentType": "image/png", "sizeBytes": 48211,
+  "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "contentId": "0123456789abcdef0123456789abcdef@qlar" }
+```
+
+`sha256` is lower-case hex. `contentId` (without angle brackets) is set for a picture the HTML shows
+with `<img src="cid:...">`; it is `null` or absent for an ordinary attachment.
+
+### What the signature covers
+
+The canonical form of §2 is unchanged. If, and only if, `attachments` is not empty, one more line is
+appended after a newline: the base64 (with padding) SHA-256 of one line per attachment, in array order,
+joined by newlines. Each line is `fileName`, `contentType`, `contentId` (empty when null or absent),
+`sha256` and `sizeBytes`, joined by tab characters. Changing any field of any attachment therefore
+invalidates the signature.
+
+### Fetching the bytes
+
+```
+GET /jobs/{jobId}/attachments/{index}
+```
+
+`index` is the 0-based position in `attachments`. The request has no body and is signed like every call
+(§2): the signed path is the path above, relative to the API root, and the body hash is the hash of an
+empty body. Every request needs a fresh nonce. `200` carries the raw bytes. The gateway accepts them only
+if their length equals `sizeBytes` and their SHA-256 equals `sha256`; each picture may be at most 8 MB and
+all of them together at most 15 MB. `404` means the picture is no longer available.
+
+### When a picture is missing
+
+A picture that cannot be fetched or verified is skipped: nothing partial is attached, the
+`<img src="cid:...">` tags are removed from the HTML, and the reply is still sent with its text. The
+gateway records `attachments_skipped` in its audit log. The reply's `Content-ID` header is the `contentId`
+in angle brackets, and the picture is sent inline, related to the HTML part. Ordinary attachments are sent
+as attachments with their `fileName`.
