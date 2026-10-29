@@ -326,3 +326,50 @@ def test_empty_html_falls_back_to_ordinary_attachments(mail):
     (attachment,) = list(mime.iter_attachments())
     assert attachment.get_filename() == "chart.png"
     assert attachment["Content-ID"] is None
+
+
+# -- only pictures can be attached ---------------------------------------------------------------
+
+
+def test_non_picture_content_type_invalidates_the_whole_list():
+    client = FakeClient({0: PNG, 1: PNG})
+    job = job_of(entry(), entry(contentType="application/pdf", fileName="a.pdf", contentId=None))
+
+    assert fetch_job_attachments(client, job) is None
+    assert client.paths == []
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["application/zip", "text/html", "application/pdf", "application/octet-stream", "image/svg+xml"],
+)
+def test_zip_and_html_content_types_are_refused(content_type):
+    job = job_of(entry(contentType=content_type, contentId=None))
+
+    assert fetch_job_attachments(FakeClient({0: PNG}), job) is None
+
+
+def test_gif_is_not_accepted_for_now():
+    assert fetch_job_attachments(FakeClient({0: PNG}), job_of(entry(contentType="image/gif"))) is None
+
+
+@pytest.mark.parametrize("content_type", ["image/png", "image/jpeg", "image/webp"])
+def test_the_three_picture_types_are_accepted(content_type):
+    fetched = fetch_job_attachments(FakeClient({0: PNG}), job_of(entry(contentType=content_type)))
+
+    assert [f.content_type for f in fetched] == [content_type]
+
+
+def test_poll_non_picture_attachment_sends_the_reply_without_attachments(harness):
+    calls = _capture(harness)
+    client = FakeClient({0: PNG})
+    harness.loop.client.get_bytes = client.get_bytes
+    job = harness.job(
+        protocol=2, jobId=JOB_ID, attachments=[entry(contentType="application/pdf", contentId=None)]
+    )
+
+    harness.loop._run_job(job)
+
+    assert client.paths == []
+    assert calls[0]["attachments"] is None
+    assert [e["status"] for e in harness.audit()] == ["attachments_skipped", "sent"]

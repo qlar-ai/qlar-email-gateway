@@ -409,10 +409,11 @@ and `attachments[]` is still the list of `{fileName, contentType, sizeBytes, url
 - Only the **first five** files of an email, in the order they appear, are uploaded. Further files
   are listed with an empty `url`.
 - A file larger than 20 MB, or of a type Qlar does not read, is listed with an empty `url` and its
-  bytes are not sent. Qlar reads JPEG, PNG and WebP images, and `.pdf`, `.txt`, `.md`, `.docx`, `.xlsx` and
-  `.csv` files (Word, Excel and CSV files are read as text). Older `.doc` and `.xls` files, macro-enabled `.docm` and
-  `.xlsm` files and PowerPoint files are not read: they are listed by name only. The type is judged by the
-  file extension, so a CSV that a mail program labels `application/vnd.ms-excel` is still sent.
+  bytes are not sent. Qlar reads JPEG, PNG and WebP images, and `.pdf`, `.txt`, `.md`, `.docx`,
+  `.xlsx` and `.csv` files (Word, Excel and CSV files are read as text). Older `.doc` and `.xls`
+  files, macro-enabled `.docm` and `.xlsm` files and PowerPoint files are not read: they are listed by
+  name only. The type is judged by the file extension, so a CSV that a mail program labels
+  `application/vnd.ms-excel` is still sent.
 - File names are sent without any folder part, at most 255 characters (the extension is kept); non-ASCII
   names are decoded first. Attached emails (`message/rfc822`) are not uploaded and their contents are not
   listed.
@@ -468,7 +469,10 @@ A job with pictures has `"protocol": 2` and an `attachments` array (between `con
 ```
 
 `sha256` is lower-case hex. `contentId` (without angle brackets) is set for a picture the HTML shows
-with `<img src="cid:...">`; it is `null` or absent for an ordinary attachment.
+with `<img src="cid:...">`; it is `null` or absent for an ordinary (non-inline) attachment. `contentType` must be exactly
+`image/png`, `image/jpeg` or `image/webp`: a job that declares any other type, in either kind of
+attachment, is treated as invalid and its reply is sent without pictures. A new attachment type
+needs a new gateway release.
 
 ### What the signature covers
 
@@ -488,10 +492,10 @@ GET /jobs/{jobId}/attachments/{index}
 (§2): the signed path is the path above, relative to the API root, and the body hash is the hash of an
 empty body. Every request needs a fresh nonce. `200` carries the raw bytes. The gateway accepts them only
 if their length equals `sizeBytes` and their SHA-256 equals `sha256`; each picture may be at most 8 MB and
-all of them together at most 15 MB. `404` means the picture is no longer available. The gateway stops downloading as soon as more than
-`sizeBytes` bytes arrive (or `Content-Length` says so), and refuses a job whose fields are not of the expected
-form: `jobId` is `job_` and 32 lower-case hex characters, `fileName` is 1 to 100 letters, digits, `.`, `_`, `-`
-or spaces, `contentType` is `type/subtype` in lower case, and `contentId` is 32 lower-case hex characters
+all of them together at most 15 MB. `404` means the picture is no longer available. The gateway
+stops downloading as soon as more than `sizeBytes` bytes arrive (or `Content-Length` says so), and
+refuses a job whose fields are not of the expected form: `jobId` is `job_` and 32 lower-case hex characters, `fileName` is 1 to 100 letters, digits, `.`, `_`, `-`
+or spaces, `contentType` is `image/png`, `image/jpeg` or `image/webp`, and `contentId` is 32 lower-case hex characters
 followed by `@qlar`. One invalid item means the reply is sent without any of the pictures.
 
 ### When a picture is missing
@@ -499,5 +503,5 @@ followed by `@qlar`. One invalid item means the reply is sent without any of the
 A picture that cannot be fetched or verified is skipped: nothing partial is attached, the
 `<img src="cid:...">` tags are removed from the HTML, and the reply is still sent with its text. The
 gateway records `attachments_skipped` in its audit log. The reply's `Content-ID` header is the `contentId`
-in angle brackets, and the picture is sent inline, related to the HTML part. Ordinary attachments are sent
-as attachments with their `fileName`.
+in angle brackets, and the picture is sent inline, related to the HTML part. A picture with no `contentId` is sent as
+an ordinary attachment with its `fileName`; it is limited to the same picture types.

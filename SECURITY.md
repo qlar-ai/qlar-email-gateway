@@ -27,9 +27,8 @@ While the project is pre-1.0, security fixes go to the latest minor release only
 ## Scope
 
 In scope: anything that lets a job send mail the send guard should have refused (another
-recipient, another `From`, an attachment the signed job does not declare or that fails its SHA-256
-check, past the rate limit), makes the gateway change the
-mailbox (mark, move or delete mail), lets anyone impersonate a gateway or Qlar, bypasses
+recipient, another `From`, an attachment that is not a PNG, JPEG or WebP picture declared by the signed job or that fails
+its SHA-256 check, past the rate limit), makes the gateway change the mailbox (mark, move or delete mail), lets anyone impersonate a gateway or Qlar, bypasses
 signature or replay protection, or extracts the private key or the mailbox password from the
 process, its logs or its audit file.
 

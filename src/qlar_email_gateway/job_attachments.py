@@ -30,7 +30,8 @@ FETCH_TIMEOUT_SECONDS = 30.0
 # else is not something Qlar produces, so the whole list is dropped rather than trusted.
 _JOB_ID = re.compile(r"^job_[0-9a-f]{32}$")
 _FILE_NAME = re.compile(r"^[A-Za-z0-9._ -]{1,100}$")
-_CONTENT_TYPE = re.compile(r"^[a-z0-9.+-]+/[a-z0-9.+-]+$")
+# Pictures only. A reply may carry nothing else, whatever the job says; a new type needs a new release.
+_PICTURE_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 _CONTENT_ID = re.compile(r"^[0-9a-f]{32}@qlar$")
 
 
@@ -100,7 +101,7 @@ def _parse_entry(entry: Any) -> tuple[str, str, int, str, str | None] | None:
     size, digest, content_id = entry.get("sizeBytes"), entry.get("sha256"), entry.get("contentId")
     if not isinstance(file_name, str) or not _FILE_NAME.fullmatch(file_name):
         return None
-    if not isinstance(content_type, str) or not _CONTENT_TYPE.fullmatch(content_type):
+    if not isinstance(content_type, str) or content_type not in _PICTURE_TYPES:
         return None
     if not isinstance(size, int) or isinstance(size, bool) or size < 0:
         return None
